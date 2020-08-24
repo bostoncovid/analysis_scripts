@@ -1,0 +1,2757 @@
+---
+title: "11_manuscript_markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+
+library(tidyverse)
+library(naniar)
+library(broom)
+library(insight)
+library(mgcv)
+library(lubridate)
+library(parameters)
+library(aCRM)
+library(performance)
+library(missRanger)
+library(pheatmap)
+library(corrr)
+library(car)
+library(naniar)
+library(ggrepel)
+library(leaflet)
+library(ggplot2)
+library(DT)
+library(sf)
+library(performance)
+library(postGIStools)
+library(dbplyr)
+library(DBI)
+library(odbc)
+library(RPostgreSQL)
+library(effectsize)
+library(lme4)
+library(RODBC)
+library(mapview)
+library(parallel)
+library(future)
+
+library(metafor)
+
+library(psych)
+
+library(lctools)
+#library(ape)
+
+set.seed(9448)
+
+round_df <- function(df, digits) {
+  nums <- vapply(df, is.numeric, FUN.VALUE = logical(1))
+
+  df[,nums] <- round(df[,nums], digits = digits)
+
+  (df)
+}
+
+st_drop_geometry <- function(x) {
+  if(inherits(x,"sf")) {
+    x <- st_set_geometry(x, NULL)
+    class(x) <- 'data.frame'
+  }
+  return(x)
+}
+
+
+
+extract_parameters <- function(i,df){
+  parameters <- df[[i]]$result$parameters
+  return(parameters)
+
+}
+
+
+extract_vif <- function(i,df){
+  parameters <- df[[i]]$result$vif_df
+  return(parameters)
+
+}
+
+
+
+
+
+number_of_cores <- detectCores()
+plan(multisession, workers = number_of_cores)
+
+
+
+
+
+
+
+
+patient_dim <- read_rds('data/patient_dim_v2.rds') %>% 
+  mutate(PATIENT_NUM=as.character(PATIENT_NUM))  
+
+race_dim <- patient_dim %>%
+  dplyr::select(PATIENT_NUM,race_normalized, language_normalized, inscat1)
+
+
+credentials <- list(dbname = '',
+                    host="",
+                    port=,
+                    user = '',
+                    password = '')
+
+
+
+
+
+
+
+query <-
+    "
+  select a.shape_id,
+  a.geoid,
+  st_area(a.geographywkt)/1000000.0 as area_sq_km
+  from exposome_pici.shapefile a
+  where a.summarylevelid = ?summarylevelid
+  and a.startdate = ?shapefile_startdate
+  and a.enddate=?shapefile_enddate
+  "
+
+
+
+
+lab_regression_df_initial <- read_rds('data/covid_lab_pcr_aggregate.rds')  %>% 
+  mutate(PATIENT_NUM=as.character(PATIENT_NUM))
+
+patient_num_lab_df_covid_positive <- lab_regression_df_initial %>% 
+  filter(any_pcr_pos == '1') %>% select(PATIENT_NUM) %>% unique()
+
+
+inpatient_regression_df_initial <- read_rds('data/covid_inpatient.rds') %>% 
+  mutate(PATIENT_NUM=as.character(PATIENT_NUM)) %>% 
+  inner_join(patient_num_lab_df_covid_positive, by = 'PATIENT_NUM')
+
+
+
+EMPI_address_geocoded <- read_rds('data/basic_info_address_subset.rds') %>% 
+  mutate(PATIENT_NUM=as.character(PATIENT_NUM)) %>% 
+  mutate(pop_dens = total_population/area_sq_km) %>%
+  rename(age_test=AGE_IN_YEARS_NUM) %>%
+  rename(Gender=SEX_CD) %>%
+  mutate(non_white_pct = 1-white_pct) %>% dplyr::select(-race_normalized,-language_normalized,-inscat1) %>%
+  left_join(race_dim, by='PATIENT_NUM') %>%
+  mutate(pct_uninsured_dichotimized = if_else(pct_uninsured == 0.0,0,1)) %>%
+  mutate(more_than_two_occupant_per_room_pct_dichotimized = if_else(more_than_two_occupant_per_room_pct == 0.0,0,1)) %>%
+  mutate(race_normalized = if_else(is.na(race_normalized),'missing',race_normalized)) %>%
+  mutate(language_normalized = if_else(is.na(language_normalized),'missing',language_normalized)) %>%
+  mutate(inscat1 = if_else(is.na(inscat1),0,inscat1)) 
+
+
+EMPI_address_geocoded$inscat1 <- factor(EMPI_address_geocoded$inscat1, levels = c("3", "0", "1","2"))
+EMPI_address_geocoded$race_normalized <- factor(EMPI_address_geocoded$race_normalized, levels = c("white", "black", "hispanic","asian","other","missing"))
+
+
+lab_regression_df <- lab_regression_df_initial %>% inner_join(EMPI_address_geocoded, by='PATIENT_NUM') %>%
+  mutate_at(vars(total_population:units_in_structure_50_plus_pct), as.numeric) 
+
+
+inpatient_regression_df <- inpatient_regression_df_initial %>% inner_join(EMPI_address_geocoded, by='PATIENT_NUM') %>%
+  mutate_at(vars(total_population:units_in_structure_50_plus_pct), as.numeric) 
+
+
+lab_regression_df <- lab_regression_df %>% 
+  mutate(total_population = if_else(total_population <= 0.0, NA_real_,total_population)) %>%
+  mutate(pop_dens = if_else(pop_dens <= 0.0, NA_real_,pop_dens))
+
+
+inpatient_regression_df <- inpatient_regression_df %>% 
+  mutate(total_population = if_else(total_population <= 0.0, NA_real_,total_population)) %>%
+  mutate(pop_dens = if_else(pop_dens <= 0.0, NA_real_,pop_dens))
+
+avg_population <- lab_regression_df %>% summarise(mean_population = mean(total_population, na.rm = TRUE), 
+                                                  mean_pop_dens=mean(pop_dens, na.rm = TRUE))
+
+lab_regression_df <- lab_regression_df %>% 
+  mutate(total_population = if_else(is.na(total_population), avg_population$mean_population,total_population)) %>%
+  mutate(pop_dens = if_else(is.na(pop_dens), avg_population$mean_pop_dens,pop_dens)) 
+
+
+
+
+inpatient_regression_df <- inpatient_regression_df %>% 
+  mutate(total_population = if_else(is.na(total_population), avg_population$mean_population,total_population)) %>%
+  mutate(pop_dens = if_else(is.na(pop_dens), avg_population$mean_pop_dens,pop_dens)) 
+  
+
+
+per_capita_testing <- lab_regression_df %>% mutate(any_pcr_pos = as.numeric(any_pcr_pos)) %>%
+  group_by(shape_id, total_population) %>% 
+  tally() %>%  
+  ungroup() %>% 
+  mutate(per_capita_testing = n/total_population) %>% 
+  select(-total_population,-n) 
+
+
+
+lab_regression_df <- lab_regression_df %>% left_join(per_capita_testing, by='shape_id') %>%
+  mutate(median_household_income = median_household_income / 1000.0) %>%
+  mutate(median_home_value = median_home_value / 1000.0) %>%
+  mutate(total_population_log = log10(total_population+1)) %>%
+  mutate(units_in_structure_5_20_pct = units_in_structure_5_9_pct + units_in_structure_10_19_pct) %>%
+  mutate(pop_dens_log = log10(pop_dens))
+
+
+
+inpatient_regression_df <- inpatient_regression_df %>% left_join(per_capita_testing, by='shape_id') %>%
+  mutate(median_household_income = median_household_income / 1000.0) %>%
+  mutate(median_home_value = median_home_value / 1000.0) %>%
+  mutate(total_population_log = log10(total_population+1)) %>%
+  mutate(units_in_structure_5_20_pct = units_in_structure_5_9_pct + units_in_structure_10_19_pct) %>%
+  mutate(pop_dens_log = log10(pop_dens))
+
+
+
+lab_regression_df <- lab_regression_df %>% mutate(any_pcr_pos=as.numeric(any_pcr_pos))
+
+
+
+lab_regression_df_pre_filter <- lab_regression_df
+inpatient_regression_df_pre_filter <- inpatient_regression_df
+
+
+
+
+
+
+lab_regression_df <- lab_regression_df %>% filter(VIP != 'E' & age_test >= 18) 
+
+inpatient_regression_df <- inpatient_regression_df %>% filter(VIP != 'E' & age_test >= 18) 
+
+
+
+
+
+
+environmental_variables <- c('over_65_all_pct',
+                             'non_white_pct', 
+                             'white_pct',
+                             'black_pct',
+                             'asian_pct',
+                             'hispanic_pct',
+                             'foreign_born_pct', 
+                             'pct_private_insurance',
+                             'pct_medicare_insurance',
+                             'pct_medicaid_insurance',
+                             'pct_uninsured',
+                             'pct_uninsured_dichotimized',
+                             'total_population_log',
+                             'pop_dens_log',
+                             'median_household_income',
+                             'public_assistance_income',
+                             'gini_index',
+                             'poverty_under_100_pct', 
+                             'poverty_under_150_pct',
+                             'poverty_under_200_pct',
+                             'nohs_pct', 
+                             'college_pct', 
+                             'unemployed_pct',
+                             'essential_worker_pct', 
+                             'more_than_one_occupant_per_room_pct',
+                             'more_than_one_point_five_occupant_per_room_pct',
+                             'more_than_two_occupant_per_room_pct',
+                             'more_than_two_occupant_per_room_pct_dichotimized',
+                             'household_2_plus_pct', 
+                             'household_3_plus_pct',
+                             'household_4_plus_pct',
+                             'household_5_plus_pct',
+                             'household_6_plus_pct',
+                             'household_7_plus_pct',
+                             'median_home_value',
+                             'lack_plumbing_facilities_pct',
+                             'units_in_structure_1_pct', 
+                             'units_in_structure_2_plus_pct',
+                             'units_in_structure_3_plus_pct',
+                             'units_in_structure_5_plus_pct',
+                             'units_in_structure_10_plus_pct',
+                             'units_in_structure_20_plus_pct',
+                             'units_in_structure_50_plus_pct',
+                             'commute_walk_pct',
+                             'commute_public_transportation_pct',
+                             'commute_vehicle_pct',
+                             'commute_work_from_home_pct',
+                             'total_below_poverty',
+                             'median_year_house_built',
+                             'pop_dens')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+inpatient_regression_df <- inpatient_regression_df %>% mutate(inpatient_flag = as.numeric(inpatient_flag))
+
+
+
+death_inpatient_df <- inpatient_regression_df %>% filter(inpatient_flag == '1') %>%
+  filter(!is.na(VITAL_STATUS_CD)) %>%
+  mutate(death_flag = if_else(VITAL_STATUS_CD == 'Y',1,0)) 
+
+
+
+
+inpatient_census_tract <- inpatient_regression_df %>% 
+  filter(inpatient_flag == '1') %>% 
+  group_by(shape_id) %>% 
+  tally() %>% 
+  ungroup() %>%
+  rename(inpatient_count = n)
+
+death_census_tract <- death_inpatient_df %>% filter(death_flag == '1') %>% 
+  group_by(shape_id) %>% 
+  tally() %>%
+  ungroup() %>%
+  rename(death_count=n)
+  
+
+list_nums <- 1:length(environmental_variables)
+
+
+```
+
+
+
+## Counts
+
+### Summary before filtering
+
+#### All Statistics
+```{r}
+
+num_people_pre_filtered <- lab_regression_df_pre_filter %>% summarize(n=n())
+
+num_people_pre_filtered <- num_people_pre_filtered$n
+
+DT::datatable(num_people_pre_filtered %>% data.frame(.))
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+DT::datatable(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,race_normalized) %>% tally() %>% pivot_wider(names_from = any_pcr_pos, values_from=n))
+
+
+DT::datatable(lab_regression_df_pre_filter %>% group_by(race_normalized) %>% summarize(positivity_rate = mean(as.numeric(any_pcr_pos))))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>%  group_by(any_pcr_pos) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter  %>% tally(), digits = 4))
+
+
+
+
+
+
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,Gender) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,inscat1) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
+
+```
+
+
+
+### Summary after filtering
+
+#### Labs
+```{r}
+
+num_people_post_filtered <- lab_regression_df %>% summarize(n=n())
+
+num_people_post_filtered <- num_people_post_filtered$n
+
+DT::datatable(num_people_post_filtered %>% data.frame(.))
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(lab_regression_df %>% group_by(any_pcr_pos,race_normalized) %>% tally() %>% pivot_wider(names_from = any_pcr_pos, values_from=n))
+
+
+DT::datatable(lab_regression_df %>% group_by(race_normalized) %>% summarize(positivity_rate = mean(as.numeric(any_pcr_pos))))
+
+
+DT::datatable(round_df(lab_regression_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df %>%  group_by(any_pcr_pos) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df  %>% tally(), digits = 4))
+
+
+
+
+
+
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+```
+
+##### Violin Plot - pct_uninsured
+```{r}
+
+
+ggplot(lab_regression_df, aes(x=as.factor(any_pcr_pos),y=pct_uninsured)) + geom_violin()
+
+
+DT::datatable(lab_regression_df %>% group_by(any_pcr_pos) %>% 
+  summarise(min=min(pct_uninsured),
+            max=max(pct_uninsured), 
+            mean=mean(pct_uninsured), 
+            median=quantile(pct_uninsured, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(pct_uninsured, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(pct_uninsured, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(pct_uninsured, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(pct_uninsured, probs=0.99, na.rm=TRUE),
+            IQR = IQR(pct_uninsured)
+            ) %>% 
+  round_df(digits = 4)
+)
+
+
+
+```
+
+
+
+
+##### Violin Plot - more_than_two_occupant_per_room_pct
+```{r}
+
+
+ggplot(lab_regression_df, aes(x=as.factor(any_pcr_pos),y=more_than_two_occupant_per_room_pct)) + geom_violin()
+
+
+DT::datatable(lab_regression_df %>% group_by(any_pcr_pos) %>% 
+  summarise(min=min(more_than_two_occupant_per_room_pct),
+            max=max(more_than_two_occupant_per_room_pct), 
+            mean=mean(more_than_two_occupant_per_room_pct), 
+            median=quantile(more_than_two_occupant_per_room_pct, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(more_than_two_occupant_per_room_pct, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(more_than_two_occupant_per_room_pct, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(more_than_two_occupant_per_room_pct, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(more_than_two_occupant_per_room_pct, probs=0.99, na.rm=TRUE),
+            IQR = IQR(more_than_two_occupant_per_room_pct)
+            ) %>% 
+  round_df(digits = 4)
+)
+
+
+
+```
+
+
+#### Inpatient
+```{r}
+
+num_people_post_filtered <- inpatient_regression_df %>% summarize(n=n())
+
+num_people_post_filtered <- num_people_post_filtered$n
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(inpatient_regression_df %>% group_by(inpatient_flag,race_normalized) %>% tally() %>% pivot_wider(names_from = inpatient_flag, values_from=n))
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized) %>% summarize(inpatient_rate = mean(as.numeric(inpatient_flag))))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>%  group_by(inpatient_flag) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+DT::datatable(round_df(inpatient_regression_df  %>% tally(), digits = 4))
+
+
+
+
+
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+```
+
+
+
+
+#### Death
+```{r}
+
+num_people_post_filtered <- death_inpatient_df %>% summarize(n=n())
+
+num_people_post_filtered <- num_people_post_filtered$n
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(death_inpatient_df %>% group_by(death_flag,race_normalized) %>% tally() %>% pivot_wider(names_from = death_flag, values_from=n))
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized) %>% summarize(inpatient_rate = mean(as.numeric(death_flag))))
+
+
+DT::datatable(round_df(death_inpatient_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+
+
+DT::datatable(round_df(death_inpatient_df %>%  group_by(death_flag) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
+
+
+DT::datatable(round_df(death_inpatient_df  %>% tally(), digits = 4))
+
+
+
+
+
+
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
+
+```
+
+
+
+
+#### Race Before and After Incorporating Country of Origin
+```{r}
+
+
+race_prefiltering <- lab_regression_df %>% select(PATIENT_NUM, race_normalized) %>% 
+  left_join(patient_dim %>% dplyr::select(-race_normalized), by='PATIENT_NUM') %>%
+  dplyr::select(PATIENT_NUM,race_normalized, LANGUAGE_CD,RACE_CD,CountryOfOriginDSC) %>%
+  mutate(race_normalized_no_country = case_when(RACE_CD == 'WHITE' ~ 'white',
+                                     RACE_CD == 'BLACK OR AFRICAN AMERICAN' ~ 'black',
+                                     RACE_CD == 'OTHER' ~ 'other',
+                                     RACE_CD == '@' ~ 'missing',
+                                     RACE_CD == 'ASIAN' ~ 'asian',
+                                     RACE_CD == 'HISPANIC OR LATINO' ~ 'hispanic',
+                                     RACE_CD == 'OTHER@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'DECLINED' ~ 'missing',
+                                     RACE_CD == 'UNKNOWN' ~ 'missing',
+                                     RACE_CD == 'WHITE@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'AMERICAN INDIAN OR ALASKA NATIVE' ~ 'other',
+                                     RACE_CD == 'HISPANIC OR LATINO@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER' ~ 'asian',
+                                     RACE_CD == 'BLACK OR AFRICAN AMERICAN@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == '@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'DECLINED@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'SPANISH@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'UNKNOWN@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'BLACK' ~ 'black',
+                                     RACE_CD == 'DOMINICAN' ~ 'hispanic',
+                                     RACE_CD == 'NOT GIVEN' ~ 'missing',
+                                     RACE_CD == 'ASIAN@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'W' ~ 'white',
+                                     RACE_CD == 'U' ~ 'missing',
+                                     RACE_CD == 'DOMINICAN@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'H' ~ 'hispanic',
+                                     RACE_CD == 'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER@HISPANIC' ~ 'asian',
+                                     RACE_CD == 'UNAVAILABLE' ~ 'missing',
+                                     RACE_CD == 'AMERICAN INDIAN OR ALASKA NATIVE@HISPANIC' ~ 'other',
+                                     RACE_CD == 'ASIAN/AMER IND@HISPANIC' ~ 'hispanic',
+                                     RACE_CD == 'EUROPEAN' ~ 'white',
+                                     RACE_CD == 'HIS/WHITE' ~ 'hispanic',
+                                     RACE_CD == 'NOT REPORTED' ~ 'missing',
+                                     RACE_CD == 'ORIENTAL' ~ 'asian',
+                                     RACE_CD == 'SPANISH' ~ 'hispanic'))
+
+
+
+DT::datatable(race_prefiltering %>% group_by(race_normalized, race_normalized_no_country) %>% tally())
+
+
+
+
+DT::datatable(race_prefiltering %>% 
+                filter(race_normalized_no_country == 'missing' | race_normalized_no_country == 'other' ) %>% 
+                filter(race_normalized_no_country != race_normalized) %>%
+                group_by(race_normalized, race_normalized_no_country) %>% tally() %>%
+                arrange(race_normalized_no_country)
+                )
+
+
+```
+
+
+
+
+
+
+# Map
+
+## Process Data
+```{r}
+
+con <- dbConnect(PostgreSQL(), dbname = "", user = "",
+                 host = "",
+                 password = "")
+
+
+postgis_2013_2014_census_tract_sf <- get_postgis_query(con,
+"select b.shape_id,
+b.latitude,
+b.longitude,
+b.geoid,
+b.statefip,
+geometrywkt
+from exposome_pici.shapefile b
+where summarylevelid = '140'
+and b.startdate = '2018-01-01'
+and b.enddate = '2018-12-31' and statefip = ANY(ARRAY['25'])", geom_name = "geometrywkt") %>% st_as_sf(.) 
+
+
+postgis_2013_2014_census_tract_sf <- st_set_crs(postgis_2013_2014_census_tract_sf, 4326) %>%
+  mutate(shape_id=as.character(shape_id))
+
+
+acs_variables <- lab_regression_df %>% 
+  select(shape_id,total_population,white_pct,black_pct, asian_pct, hispanic_pct, 
+         median_household_income, total_below_poverty, median_home_value, public_assistance_income, 
+         gini_index, college_pct,nohs_pct, unemployed_pct, more_than_one_occupant_per_room_pct,
+         more_than_one_point_five_occupant_per_room_pct, more_than_two_occupant_per_room_pct,
+         pct_private_insurance, pct_medicare_insurance, pct_medicaid_insurance,over_65_all_pct,
+         under_19_all_pct,poverty_under_100_pct,poverty_under_100_150_pct,poverty_under_150_200_pct,
+         area_sq_km, commute_public_transportation_pct, median_year_house_built, lack_plumbing_facilities_pct,
+         foreign_born_pct, essential_worker_pct, bluecollar_worker_pct, people_facing_worker_pct, household_3_plus_pct,
+         household_4_plus_pct, household_5_plus_pct, household_6_plus_pct,household_7_plus_pct) %>% unique() 
+
+acs_variables <- round_df(acs_variables, digits = 4)
+
+
+
+num_positive_tests <- lab_regression_df %>% filter(any_pcr_pos == '1') %>% tally()
+
+num_positive_tests <- num_positive_tests$n
+
+
+patient_count_census_tract <- lab_regression_df %>% 
+  group_by(shape_id, any_pcr_pos) %>%
+  tally() %>% 
+  pivot_wider(names_from = any_pcr_pos, values_from=n) %>% rename(negative=`0`,positive=`1`) %>%
+  replace_na(list(positive=0,negative=0)) %>%
+  mutate(total_patients=positive+negative) %>%
+  mutate(pct_positive = positive/total_patients) %>%
+  ungroup() %>%
+  mutate(pct_positive = round(pct_positive,digits = 4))
+
+
+spanish_census_tracts <- lab_regression_df %>% 
+  filter( language_normalized == 'spanish') %>%
+  group_by(shape_id, any_pcr_pos) %>% tally() %>%
+    pivot_wider(names_from = any_pcr_pos, values_from=n) %>% rename(negative_spanish=`0`,positive_spanish=`1`) %>%
+    replace_na(list(negative_spanish=0,positive_spanish=0))
+
+
+
+hispanic_census_tracts <- lab_regression_df %>% 
+  filter( race_normalized == 'hispanic') %>%
+  group_by(shape_id, any_pcr_pos) %>% tally() %>%
+    pivot_wider(names_from = any_pcr_pos, values_from=n) %>% 
+  rename(negative_hispanic=`0`,positive_hispanic=`1`) %>%
+    replace_na(list(negative_hispanic=0,positive_hispanic=0))
+
+
+patient_count_census_tract <- patient_count_census_tract %>% 
+  left_join(spanish_census_tracts,by='shape_id') %>%
+    left_join(hispanic_census_tracts,by='shape_id') %>%
+      replace_na(list(negative_spanish=0,positive_spanish=0)) %>%
+      replace_na(list(negative_hispanic=0,positive_hispanic=0)) %>%
+      mutate(pct_positive_all_tracts = positive/ num_positive_tests)
+
+
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf %>%
+  inner_join(patient_count_census_tract, by='shape_id') 
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient 
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>%
+  mutate(count_category = case_when(pct_positive == 0.0 ~ '0%',
+                                    pct_positive > 0.0 & pct_positive <= .10 ~ '0-10%',
+                                    pct_positive > .10 & pct_positive <= .30 ~ '10-30%',
+                                    pct_positive > .30 & pct_positive <= .50 ~ '30-50%',
+                                    pct_positive > .50 & pct_positive < 1.0 ~ '50-100%',
+                                    pct_positive == 1.0  ~ '100%'
+                                    )) %>% left_join(acs_variables, by='shape_id') %>%
+  mutate(count_category = factor(count_category, levels = c('0%','0-10%','10-30%','30-50%','50-100%','100%'))) %>%
+  left_join(per_capita_testing, by='shape_id') %>%
+  mutate(per_capita_testing = per_capita_testing * 1000) %>%
+  left_join(inpatient_census_tract, by='shape_id') %>%
+  left_join(death_census_tract, by='shape_id') %>%
+  mutate(positive_per_1000=(positive * 1000)/total_population) %>%
+  mutate(inpatient_per_1000=(inpatient_count*1000)/total_population) %>%
+  mutate(death_per_1000=(death_count*1000)/total_population)
+
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>% filter(total_patients >=5)
+
+```
+
+## Distributions
+
+### Positive Rate Per 1000
+```{r}
+
+ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=total_patients)) + geom_histogram() + scale_x_log10()
+
+
+ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=positive_per_1000)) + geom_histogram() + scale_x_log10()
+
+
+
+DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
+  summarise(min=min(positive_per_1000),
+            max=max(positive_per_1000), 
+            mean=mean(positive_per_1000), 
+            median=quantile(positive_per_1000, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(positive_per_1000, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(positive_per_1000, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(positive_per_1000, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
+            pct_20=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
+            pct_60=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
+            pct_80=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
+
+            IQR = IQR(positive_per_1000)
+            ) %>% 
+  round_df(digits = 4)
+)
+
+
+```
+
+
+### Inpatient Rate Per 1000
+```{r}
+ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=inpatient_per_1000)) + geom_histogram() + scale_x_log10()
+
+
+
+
+DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
+  summarise(min=min(inpatient_per_1000, na.rm = TRUE),
+            max=max(inpatient_per_1000, na.rm = TRUE), 
+            mean=mean(inpatient_per_1000, na.rm=TRUE), 
+            median=quantile(inpatient_per_1000, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(inpatient_per_1000, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(inpatient_per_1000, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(inpatient_per_1000, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
+            pct_20=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
+            pct_60=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
+            pct_80=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE)            
+            ) %>% 
+  round_df(digits = 4)
+)
+
+
+```
+
+
+
+
+### Death Rate Per 1000
+```{r}
+ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=death_per_1000)) + geom_histogram() + scale_x_log10()
+
+
+
+DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
+  summarise(min=min(death_per_1000, na.rm = TRUE),
+            max=max(death_per_1000, na.rm = TRUE), 
+            mean=mean(death_per_1000, na.rm=TRUE), 
+            median=quantile(death_per_1000, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(death_per_1000, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(death_per_1000, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(death_per_1000, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
+            pct_20=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
+            pct_60=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
+            pct_80=quantile(death_per_1000, probs=0.99, na.rm=TRUE)            
+            ) %>% 
+  round_df(digits = 4)
+)
+
+
+```
+
+
+### Counts by Age Group
+```{r}
+
+lab_regression_df <- lab_regression_df %>% 
+  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
+                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
+                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
+                                  age_test >= 80 ~ '>= 80 years')) %>%
+  mutate(age_category = factor(age_category,
+                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
+
+
+
+inpatient_regression_df <- inpatient_regression_df %>% 
+  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
+                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
+                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
+                                  age_test >= 80 ~ '>= 80 years')) %>%
+    mutate(age_category = factor(age_category,
+                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
+
+
+
+
+
+death_inpatient_df <- death_inpatient_df %>%
+  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
+                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
+                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
+                                  age_test >= 80 ~ '>= 80 years')) %>%
+    mutate(age_category = factor(age_category,
+                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
+
+
+```
+
+
+#### Lab
+```{r}
+n_lab <- lab_regression_df %>% tally()
+n_lab <- n_lab$n
+
+
+DT::datatable(round_df(lab_regression_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_lab), digits = 2))
+
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos) %>% 
+                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos, age_category) %>% 
+                         summarise(n=n(),percent=100*n()/n_lab), digits = 2))
+
+
+
+
+```
+
+
+
+#### Inpatient
+```{r}
+n_inpatient <- inpatient_regression_df %>% tally()
+n_inpatient <- n_inpatient$n
+
+
+DT::datatable(round_df(inpatient_regression_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_inpatient), digits = 2))
+
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag) %>% 
+                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,age_category) %>% 
+                         summarise(n=n(),percent=100*n()/n_inpatient), digits = 2))
+
+
+
+
+```
+
+
+
+
+#### Death
+```{r}
+n_death <- death_inpatient_df %>% tally()
+n_death <- n_death$n
+
+
+DT::datatable(round_df(death_inpatient_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_death), digits = 2))
+
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag) %>% 
+                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
+
+
+DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,age_category) %>% summarise(n=n(),percent=100*n()/n_death), digits = 2))
+
+
+
+
+```
+
+
+## Leaflet Map
+
+### Lab
+```{r}
+
+
+write_rds(postgis_2013_2014_census_tract_sf_patient, 'data/postgis_2013_2014_census_tract_sf_patient.rds')
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>%
+  mutate(positive_rate_category = case_when(positive_per_1000 == 0.0 ~ '0',
+                                            positive_per_1000 > 0 &  positive_per_1000 <= 1 ~ '(0-1]',
+                                            positive_per_1000 > 1 &  positive_per_1000 <= 10 ~ '(1-10]',
+                                            positive_per_1000 > 10 &  positive_per_1000 <= 30 ~ '(10-30]',
+                                            positive_per_1000 > 30 &  positive_per_1000 <= 60 ~ '(30-60]',
+                                            positive_per_1000 > 60 &  positive_per_1000 <= 100 ~ '(60-100]'
+                                            )
+         ) %>%
+  mutate(positive_rate_category = factor(positive_rate_category,levels =c('0','(0-1]','(1-10]','(10-30]','(30-60]','(60-100]'))) 
+
+
+pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
+              levels =  c('0','(0-1]','(1-10]','(10-30]','(30-60]','(60-100]'))
+
+
+
+
+p <-  leaflet() %>%
+   setView(lat=42.407211,lng =-71.382439 ,zoom = 9) %>%
+  addTiles() %>%
+  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
+              color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 0, fillOpacity = 0.5,
+              fillColor = ~pal(positive_rate_category),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              popup = paste("Negative: ", postgis_2013_2014_census_tract_sf_patient$negative, "<br>",
+                            "Positive: ", postgis_2013_2014_census_tract_sf_patient$positive, "<br>",
+                            "Total Patients: ", postgis_2013_2014_census_tract_sf_patient$total_patients, "<br>",
+                            "Positive %: ", postgis_2013_2014_census_tract_sf_patient$pct_positive, "<br>",
+                            "Positive Per 1000: ", postgis_2013_2014_census_tract_sf_patient$positive_per_1000, "<br>",
+                            "White %: ", postgis_2013_2014_census_tract_sf_patient$white_pct, "<br>",
+                            "Black %: ", postgis_2013_2014_census_tract_sf_patient$black_pct, "<br>",
+                            "Asian %: ", postgis_2013_2014_census_tract_sf_patient$asian_pct, "<br>",
+                            "Hispanic %: ", postgis_2013_2014_census_tract_sf_patient$hispanic_pct, "<br>",
+                            "Median Household Income ", postgis_2013_2014_census_tract_sf_patient$median_household_income, "<br>",
+                            "Below Poverty Level %: ", postgis_2013_2014_census_tract_sf_patient$total_below_poverty, "<br>",
+                            "College Degree %: ", postgis_2013_2014_census_tract_sf_patient$college_pct, "<br>",
+                            "No High School %: ", postgis_2013_2014_census_tract_sf_patient$nohs_pct, "<br>",
+                            "Unemployed %: ", postgis_2013_2014_census_tract_sf_patient$unemployed_pct, "<br>",
+postgis_2013_2014_census_tract_sf_patient$more_than_one_point_five_occupant_per_room_pct, "<br>",
+                            "More Than 2 Occupant Per Room %: ", postgis_2013_2014_census_tract_sf_patient$more_than_two_occupant_per_room_pct, "<br>",
+                            "Private Insurance %: ", postgis_2013_2014_census_tract_sf_patient$pct_private_insurance, "<br>",
+                            "Medicare %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicare_insurance, "<br>",
+                            "Medicaid %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicaid_insurance, "<br>",
+                            "Over 65 %: ", postgis_2013_2014_census_tract_sf_patient$over_65_all_pct, "<br>",
+                            "Under 19 %: ", postgis_2013_2014_census_tract_sf_patient$under_19_all_pct, "<br>",
+                            "Below 1.0 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_pct, "<br>",
+                            "Between 1.0 and 1.5 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_150_pct, "<br>",
+                            "Land Area (km^2): ", postgis_2013_2014_census_tract_sf_patient$area_sq_km, "<br>",
+                            "Commute Public Transporation %: ", postgis_2013_2014_census_tract_sf_patient$commute_public_transportation_pct, "<br>",
+                            "Median Year House Built: ", postgis_2013_2014_census_tract_sf_patient$median_year_house_built, "<br>",
+                            "Foreign Born %: ", postgis_2013_2014_census_tract_sf_patient$foreign_born_pct, "<br>",
+                            "Essential Workers %: ", postgis_2013_2014_census_tract_sf_patient$essential_worker_pct, "<br>",
+                            "Household 5+ People %: ", postgis_2013_2014_census_tract_sf_patient$household_5_plus_pct, "<br>")) %>%
+  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
+             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
+
+p
+
+
+```
+
+
+
+### Figure 1
+```{r}
+
+
+
+
+
+p <-  leaflet() %>%
+   setView(lat=42.407211,lng =-71.382439 ,zoom = 9) %>%
+  addTiles() %>%
+  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
+              color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 0, fillOpacity = 0.5,
+              fillColor = ~pal(positive_rate_category),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              popup = paste("Negative: ", postgis_2013_2014_census_tract_sf_patient$negative, "<br>",
+                            "Positive: ", postgis_2013_2014_census_tract_sf_patient$positive, "<br>",
+                            "Total Patients: ", postgis_2013_2014_census_tract_sf_patient$total_patients, "<br>",
+                            "Positive %: ", postgis_2013_2014_census_tract_sf_patient$pct_positive, "<br>",
+                            "Positive Per 1000: ", postgis_2013_2014_census_tract_sf_patient$positive_per_1000, "<br>",
+                            "White %: ", postgis_2013_2014_census_tract_sf_patient$white_pct, "<br>",
+                            "Black %: ", postgis_2013_2014_census_tract_sf_patient$black_pct, "<br>",
+                            "Asian %: ", postgis_2013_2014_census_tract_sf_patient$asian_pct, "<br>",
+                            "Hispanic %: ", postgis_2013_2014_census_tract_sf_patient$hispanic_pct, "<br>",
+                            "Median Household Income ", postgis_2013_2014_census_tract_sf_patient$median_household_income, "<br>",
+                            "Below Poverty Level %: ", postgis_2013_2014_census_tract_sf_patient$total_below_poverty, "<br>",
+                            "College Degree %: ", postgis_2013_2014_census_tract_sf_patient$college_pct, "<br>",
+                            "No High School %: ", postgis_2013_2014_census_tract_sf_patient$nohs_pct, "<br>",
+                            "Unemployed %: ", postgis_2013_2014_census_tract_sf_patient$unemployed_pct, "<br>",
+                            "More Than 2 Occupant Per Room %: ", postgis_2013_2014_census_tract_sf_patient$more_than_two_occupant_per_room_pct, "<br>",
+                            "Private Insurance %: ", postgis_2013_2014_census_tract_sf_patient$pct_private_insurance, "<br>",
+                            "Medicare %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicare_insurance, "<br>",
+                            "Medicaid %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicaid_insurance, "<br>",
+                            "Over 65 %: ", postgis_2013_2014_census_tract_sf_patient$over_65_all_pct, "<br>",
+                            "Under 19 %: ", postgis_2013_2014_census_tract_sf_patient$under_19_all_pct, "<br>",
+                            "Below 1.0 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_pct, "<br>",
+                            "Between 1.0 and 1.5 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_150_pct, "<br>",
+                            "Land Area (km^2): ", postgis_2013_2014_census_tract_sf_patient$area_sq_km, "<br>",
+                            "Commute Public Transporation %: ", postgis_2013_2014_census_tract_sf_patient$commute_public_transportation_pct, "<br>",
+                            "Median Year House Built: ", postgis_2013_2014_census_tract_sf_patient$median_year_house_built, "<br>",
+                            "Foreign Born %: ", postgis_2013_2014_census_tract_sf_patient$foreign_born_pct, "<br>",
+                            "Essential Workers %: ", postgis_2013_2014_census_tract_sf_patient$essential_worker_pct, "<br>",
+                            "Household 5+ People %: ", postgis_2013_2014_census_tract_sf_patient$household_5_plus_pct, "<br>")) %>%
+  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
+             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
+
+p
+
+
+
+
+
+
+```
+
+
+
+
+### Figure 2
+```{r}
+
+
+
+
+
+
+map_lab_boston <-  leaflet() %>%
+   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
+  addTiles() %>%
+  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
+              color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 0, fillOpacity = 0.5,
+              fillColor = ~pal(positive_rate_category),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE)) %>%
+  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
+             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
+
+map_lab_boston
+
+
+
+
+
+
+```
+
+
+
+
+
+### Figure 3
+```{r}
+
+pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
+              levels =  c('0','(0-2]','(2-4]','(4-6]','(6-8]','(8-9]'))
+
+
+df_inpatient_census_tract <- postgis_2013_2014_census_tract_sf_patient %>%
+  mutate(inpatient_per_1000 = if_else(is.na(inpatient_per_1000),0,inpatient_per_1000)) %>%
+  mutate(inpatient_rate_category = case_when(inpatient_per_1000 == 0.0 ~ '0',
+                                            inpatient_per_1000 > 0 &  inpatient_per_1000 <= 2 ~ '(0-2]',
+                                            inpatient_per_1000 > 2 &  inpatient_per_1000 <= 4 ~ '(2-4]',
+                                            inpatient_per_1000 > 4 &  inpatient_per_1000 <= 6 ~ '(4-6]',
+                                            inpatient_per_1000 > 6 &  inpatient_per_1000 <= 8 ~ '(6-8]',
+                                            inpatient_per_1000 > 8 &  inpatient_per_1000 <= 9 ~ '(8-9]'
+                                            )) %>%
+  mutate(inpatient_rate_category = factor(inpatient_rate_category, levels =  c('0','(0-2]','(2-4]','(4-6]','(6-8]','(8-9]')))
+
+map_inpatient_boston <-  leaflet() %>%
+   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
+  addTiles() %>%
+  addPolygons(data=df_inpatient_census_tract,
+              color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 0, fillOpacity = 0.5,
+              fillColor = ~pal(inpatient_rate_category),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE)) %>%
+  addLegend( pal=pal, values=df_inpatient_census_tract$inpatient_rate_category, 
+             opacity=0.9, title = "COVID Inpatients Per 1000", position = "bottomleft" )
+
+map_inpatient_boston
+
+
+
+
+
+
+```
+
+
+
+### Figure 4
+```{r}
+
+pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
+              levels =  c('0','(0-.5]','(.5-1]','(1-2]','(2-3]','(3-4]'))
+
+
+df_death_census_tract <- postgis_2013_2014_census_tract_sf_patient %>%
+  mutate(death_per_1000 = if_else(is.na(death_per_1000),0,death_per_1000)) %>%
+  mutate(death_rate_category = case_when(death_per_1000 == 0.0 ~ '0',
+                                            death_per_1000 > 0 &  death_per_1000 <= .5 ~ '(0-.5]',
+                                            death_per_1000 > .5 &  death_per_1000 <= 1 ~ '(.5-1]',
+                                            death_per_1000 > 1 &  death_per_1000 <= 2 ~ '(1-2]',
+                                            death_per_1000 > 2 &  death_per_1000 <= 3 ~ '(2-3]',
+                                            death_per_1000 > 3 &  death_per_1000 <= 4 ~ '(3-4]'
+                                            )) %>%
+  mutate(death_rate_category = factor(death_rate_category, levels =  c('0','(0-.5]','(.5-1]','(1-2]','(2-3]','(3-4]')))
+
+map_death_boston <-  leaflet() %>%
+   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
+  addTiles() %>%
+  addPolygons(data=df_death_census_tract,
+              color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 0, fillOpacity = 0.5,
+              fillColor = ~pal(death_rate_category),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE)) %>%
+  addLegend( pal=pal, values=df_death_census_tract$death_rate_category, 
+             opacity=0.9, title = "COVID Deaths Per 1000", position = "bottomleft" )
+
+map_death_boston
+
+
+
+
+
+
+```
+
+
+
+
+
+###Map - Spanish Speaking Census Tracts
+```{r}
+
+postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>%
+  mutate(pct_positive_spanish=positive_spanish/total_patients) %>%
+  mutate(pct_positive_spanish = pct_positive_spanish * 100)
+
+
+
+hist(postgis_2013_2014_census_tract_sf_patient$pct_positive_spanish)
+
+
+bins <- c(0, 10, 20, 30, 40, 50, Inf)
+pal <- colorBin("YlOrRd", domain = postgis_2013_2014_census_tract_sf_patient$pct_positive_spanish, bins = bins)
+
+postgis_2013_2014_census_tract_sf_patient %>%
+  leaflet() %>%
+  addTiles() %>%
+  addPolygons(label = ~shape_id,
+              fillColor = ~pal(pct_positive_spanish),
+              color = "#444444",
+              weight = 1,
+              smoothFactor = 0.5,
+              opacity = 1.0,
+              fillOpacity = 0.5,
+              highlightOptions = highlightOptions(color = "white",
+                                                  weight = 2,
+                                                  bringToFront = TRUE))  %>%
+  addLegend( pal=pal, values=df_death_census_tract$pct_positive_spanish, 
+             opacity=0.9, title = "Percentage of Individuals that are Positive Spanish Speaking of All Patients", position = "bottomleft" )
+
+
+
+
+
+
+
+```
+
+#### Table showing Census Tracts with High Number of Positive Lab Tests
+```{r}
+
+census_tracts_data <- postgis_2013_2014_census_tract_sf_patient %>% 
+  st_drop_geometry() %>% 
+  select(pct_positive_all_tracts,positive,total_patients,pct_positive,
+         negative_spanish,positive_spanish,positive_spanish,positive_hispanic,negative_hispanic) %>%
+  mutate(pct_spanish_positive=positive_spanish/positive) %>%
+  mutate(pct_hispanic_positive=positive_hispanic/positive) %>%
+  mutate(pct_positive_all_tracts = pct_positive_all_tracts * 100.0)
+
+
+DT::datatable(round_df(census_tracts_data, digits = 3))
+
+
+DT::datatable(lab_regression_df %>% group_by(race_normalized,language_normalized) %>% tally())
+
+```
+
+# Range of Environmental Variables
+```{r}
+
+
+
+census_tract_info <- lab_regression_df %>% select(shape_id,environmental_variables) %>% unique() %>%
+  left_join(postgis_2013_2014_census_tract_sf, by='shape_id') %>%
+  mutate_at(vars(latitude,longitude),as.numeric) %>% filter(!is.na(latitude)) %>%
+  filter(!is.na(longitude))
+
+census_tract_info_df <- st_drop_geometry(census_tract_info) %>% dplyr::select(-shape_id,-latitude,-longitude,-statefip,-geometry)
+
+census_tract_info_df_long <- census_tract_info_df %>% pivot_longer(-geoid)
+
+
+
+census_tract_values_summary <- census_tract_info_df_long %>% group_by(name) %>% 
+  summarise(min=min(value),
+            max=max(value), 
+            mean=mean(value), 
+            median=quantile(value, probs=0.5, na.rm=TRUE),
+            pct_25=quantile(value, probs=0.25, na.rm=TRUE),
+            pct_75=quantile(value, probs=0.75, na.rm=TRUE),
+            pct_95=quantile(value, probs=0.95, na.rm=TRUE),
+            pct_99=quantile(value, probs=0.99, na.rm=TRUE),
+            IQR = IQR(value)
+            ) %>% 
+  round_df(digits = 4)
+
+
+DT::datatable(census_tract_values_summary)
+
+```
+
+# Number of Census Tracts
+```{r}
+DT::datatable(census_tract_info_df %>% select(geoid) %>% unique() %>% tally())
+
+
+```
+
+# Lab Analysis
+
+## Distribution of Age by Race
+```{r}
+
+ggplot(lab_regression_df %>% filter(race_normalized %in% c('white','black', 'hispanic')), aes(x=age_test)) + 
+  geom_histogram() + facet_wrap(~race_normalized)
+
+
+ggplot(lab_regression_df %>% 
+         filter(race_normalized %in% c('white','black', 'hispanic')) %>% 
+                  filter(any_pcr_pos == '1'), aes(x=age_test)) + 
+  geom_histogram() + facet_wrap(~race_normalized)
+
+
+
+
+ggplot(lab_regression_df, aes(x=age_test)) + 
+  geom_histogram() + facet_wrap(~language_normalized)
+
+
+ggplot(lab_regression_df %>% 
+                  filter(any_pcr_pos == '1'), aes(x=age_test)) + 
+  geom_histogram() + facet_wrap(~language_normalized)
+
+
+```
+
+## Base Model 
+```{r}
+lab_matern_base <-  mgcv::gam(
+  formula = any_pcr_pos ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = lab_regression_df 
+)
+
+
+parameters_lab_matern_base <- parameters(lab_matern_base,exponentiate=TRUE)
+
+
+lab_glm_base <- glm(  formula = any_pcr_pos ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing,
+    family = binomial(),
+    data=lab_regression_df
+    )
+
+
+parameters_lab_glm_base <- parameters(lab_glm_base,exponentiate=TRUE)
+
+
+
+
+```
+
+### Variance Inflation Factor
+```{r}
+DT::datatable(check_collinearity(lab_matern_base))
+
+
+DT::datatable(check_collinearity(lab_glm_base))
+
+
+```
+
+
+### All Coefficients
+```{r}
+DT::datatable(round_df(parameters_lab_matern_base, digits = 4))
+
+
+
+DT::datatable(round_df(parameters_lab_glm_base, digits = 4))
+
+
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+DT::datatable(round_df(parameters_lab_matern_base %>% filter(p < 0.05), digits = 4))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## Base Plus Individual Environmental Variables
+```{r}
+gam_estimate_base_environmental_variable <- function(environmental_variable, df, formula_matern ){
+  df <- df %>% rename(environmental_value=!!environmental_variable)
+  
+  model <- gam(formula = formula_matern, data = df,family = binomial())
+  
+   parameters_output <- parameters(model,exponentiate=TRUE)
+   
+   parameters_output$environmental_variable <- environmental_variable
+   
+   collinearity_matern_both <- check_collinearity(model, component='conditional')
+
+      collinearity_matern_both$environmental_variable <- environmental_variable
+
+   
+   return(list(parameters=parameters_output,vif_df = collinearity_matern_both ))
+  
+}
+
+
+
+
+
+
+
+
+
+gam_lab_matern_base_environment <- as.formula(any_pcr_pos ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized +
+    inscat1 +
+    per_capita_testing +
+    environmental_value +
+    s(latitude, longitude, bs='gp',k=350, m=c(3,.01))
+    )
+
+
+
+gam_lab_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+                                                 .f=safely(gam_estimate_base_environmental_variable),
+                                                 df=lab_regression_df,
+                                                 formula_matern=gam_lab_matern_base_environment)
+  
+  
+
+
+
+
+
+
+list_nums <- 1:length(environmental_variables)
+
+
+
+
+
+
+
+gam_lab_parameters_base_environment_df_subset <- map(.x=list_nums, .f=extract_parameters,df=gam_lab_parameters_base_environment_list) %>% 
+  bind_rows() %>% filter(Parameter == 'environmental_value')
+
+
+gam_lab_parameters_base_environment_df_subset_vif <- map(.x=list_nums, .f=extract_vif,df=gam_lab_parameters_base_environment_list) %>% 
+  bind_rows()
+
+
+
+
+
+
+
+
+
+
+
+
+coef_base_plus_rows <- gam_lab_parameters_base_environment_df_subset %>% 
+  mutate(model='gam_base_plus') %>% 
+  mutate(Parameter=environmental_variable)
+
+
+
+
+```
+
+
+### All Coefficients
+```{r}
+FDR_df_lab <- coef_base_plus_rows %>% 
+  filter(!Parameter %in% c('age_test','race_normalizedblack','race_normalizedhispanic',
+                           'race_normalizedasian','race_normalizedother','race_normalizedmissing',
+                           'language_normalizedother','language_normalizedspanish','language_normalizedunknown',
+                           'inscat10','inscat11','inscat12','GenderM','GenderU','per_capita_testing',
+                           '(Intercept)'))
+
+
+
+
+FDR_df_lab_fdr <- FDR_df_lab %>%     
+  mutate(fdr=p.adjust(p, method="fdr")) %>%
+  mutate(significance = if_else(fdr < 0.05,'FDR significant', 'FDR not significant'))
+
+
+knitr::kable(round_df(FDR_df_lab_fdr, digits=4))
+
+
+
+
+
+
+
+
+```
+
+### Coefficients filtered by FDR < 0.05
+```{r}
+knitr::kable(round_df(FDR_df_lab_fdr %>% filter(significance == 'FDR significant'), digits = 4))
+
+
+```
+
+
+
+## Multivariate Analysis
+```{r}
+lab_matern_fdr_filtered <-  mgcv::gam(
+  formula = any_pcr_pos ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    black_pct +
+    hispanic_pct + 
+    foreign_born_pct +
+    pct_private_insurance +
+    pct_medicaid_insurance +
+    pop_dens_log +
+    poverty_under_150_pct +
+    nohs_pct +
+    college_pct+
+    unemployed_pct +
+    essential_worker_pct +
+    household_5_plus_pct +
+    commute_work_from_home_pct +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = lab_regression_df 
+)
+
+
+parameters_lab_matern_fdr_filtered<- parameters(lab_matern_fdr_filtered,exponentiate=TRUE)
+
+
+
+
+
+```
+
+### All Coefficients
+```{r}
+DT::datatable(round_df(parameters_lab_matern_fdr_filtered, digits = 4))
+
+
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+DT::datatable(round_df(parameters_lab_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+
+
+```
+
+
+
+
+
+
+# Inpatient Analysis 
+
+## Count Race, Language, Outcome
+```{r}
+
+
+inpatient_regression_df <- inpatient_regression_df %>% mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
+                                                                                       age_test >= 50 & age_test < 65  ~ '50-64 years',
+                                                                                       age_test >= 65 & age_test < 80 ~ '65-79 years',
+                                                                                       age_test >= 80 ~ '>= 80 years'))
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized, inpatient_flag) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(language_normalized, inpatient_flag) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,inpatient_flag) %>% tally())
+
+
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,age_category) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,age_category,inpatient_flag) %>% tally())
+
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized,age_category) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(race_normalized,age_category,inpatient_flag) %>% tally())
+
+
+
+DT::datatable(inpatient_regression_df %>% group_by(language_normalized,age_category) %>% tally())
+
+
+DT::datatable(inpatient_regression_df %>% group_by(language_normalized,age_category,inpatient_flag) %>% tally())
+
+
+
+```
+
+## Distribution of Race and Age
+```{r}
+
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_wrap(~race_normalized)
+
+
+ggplot(inpatient_regression_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
+       aes(x=age_test)) + geom_histogram() + facet_wrap(~race_normalized)
+
+
+
+```
+
+
+
+
+
+
+
+
+## Distribution of Language and Age
+```{r}
+
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_wrap(~language_normalized)
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+## Distribution of Race and Age Stratified by Inpatient Status
+```{r}
+
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
+
+
+ggplot(inpatient_regression_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
+
+
+
+
+```
+
+
+
+
+
+
+
+
+## Distribution of Language and Age Stratified by Inpatient Status
+```{r}
+
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
+
+
+
+
+
+
+
+
+```
+
+
+
+## Distribution of English/Spanish Language and Race Stratified by Inpatient Status
+```{r}
+
+
+ggplot(inpatient_regression_df %>% filter(language_normalized == 'english'), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
+
+
+
+
+
+ggplot(inpatient_regression_df %>% filter(language_normalized == 'spanish'), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
+
+
+
+```
+
+
+
+
+
+## Distribution of Hispanic and Language Stratified by Inpatient Status
+```{r}
+
+
+ggplot(inpatient_regression_df %>% filter(race_normalized == 'hispanic'), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
+
+
+
+
+
+ggplot(inpatient_regression_df %>% filter(race_normalized == 'white'), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
+
+
+
+```
+
+
+
+## Base Model 
+```{r, warning=FALSE}
+
+inpatient_matern_base <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_base <- parameters(inpatient_matern_base,exponentiate=TRUE)
+
+
+
+
+inpatient_matern_base_no_race <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_base_no_race <- parameters(inpatient_matern_base_no_race,exponentiate=TRUE)
+
+
+
+
+
+
+
+
+inpatient_matern_base_no_language <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_base_no_language <- parameters(inpatient_matern_base_no_language,exponentiate=TRUE)
+
+
+
+
+
+inpatient_matern_base_no_age_race <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    Gender +
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_base_no_age_race <- parameters(inpatient_matern_base_no_age_race,exponentiate=TRUE)
+
+
+
+
+
+
+inpatient_matern_base_no_age_language <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    Gender +
+    race_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_base_no_age_language <- parameters(inpatient_matern_base_no_age_language,exponentiate=TRUE)
+
+
+inpatient_glm_base <- glm(formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_base <- parameters(inpatient_glm_base,exponentiate=TRUE)
+
+
+
+inpatient_glm_base_race <- glm(formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    per_capita_testing,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_base_race <- parameters(inpatient_glm_base_race,exponentiate=TRUE)
+
+
+
+
+inpatient_glm_base_language <- glm(formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    language_normalized + 
+    per_capita_testing,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_base_language <- parameters(inpatient_glm_base_language,exponentiate=TRUE)
+
+
+
+
+
+
+
+
+inpatient_glm_gender_race_only <- glm(formula = inpatient_flag ~ 
+    Gender +
+    race_normalized,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_gender_race_only <- parameters(inpatient_glm_gender_race_only,exponentiate=TRUE)
+
+
+
+
+inpatient_glm_gender_language_only <- glm(formula = inpatient_flag ~ 
+    Gender +
+    language_normalized,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_gender_language_only <- parameters(inpatient_glm_gender_language_only,exponentiate=TRUE)
+
+
+
+
+inpatient_glm_gender_age_only <- glm(formula = inpatient_flag ~ 
+    Gender +
+    age_test,
+      family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_glm_gender_age_only <- parameters(inpatient_glm_gender_age_only,exponentiate=TRUE)
+
+
+
+
+
+
+```
+
+###Variance Inflation Factor
+```{r}
+
+DT::datatable(check_collinearity(inpatient_matern_base))
+
+
+DT::datatable(check_collinearity(inpatient_glm_base))
+
+```
+
+
+### All Coefficients
+```{r}
+DT::datatable(round_df(parameters_inpatient_matern_base, digits = 4))
+
+
+DT::datatable(round_df(parameters_inpatient_matern_base_no_race, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_matern_base_no_language, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_matern_base_no_age_race, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_matern_base_no_age_language, digits = 4))
+
+
+DT::datatable(round_df(parameters_inpatient_glm_base, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_glm_base_race, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_glm_base_language, digits = 4))
+
+
+
+DT::datatable(round_df(parameters_inpatient_glm_gender_race_only, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_glm_gender_language_only, digits = 4))
+
+DT::datatable(round_df(parameters_inpatient_glm_gender_age_only, digits = 4))
+
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+DT::datatable(round_df(parameters_inpatient_matern_base %>% filter(p < 0.05), digits = 4))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Base Plus Individal Environmental Variables
+```{r}
+
+
+
+
+gam_inpatient_matern_base_environment <- as.formula(inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized +
+    inscat1 +
+    per_capita_testing +
+    environmental_value +
+    s(latitude, longitude, bs='gp',k=350, m=c(3,.01))
+    )
+
+
+
+
+
+gam_inpatient_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+                                                 .f=safely(gam_estimate_base_environmental_variable),
+                                                 df=inpatient_regression_df,
+                                                 formula_matern=gam_inpatient_matern_base_environment)
+  
+
+
+
+
+gam_inpatient_parameters_base_environment_df_subset <- map(.x=list_nums, 
+                                                     .f=extract_parameters,
+                                                     df=gam_inpatient_parameters_base_environment_list) %>% 
+  bind_rows() %>% filter(Parameter == 'environmental_value')
+
+
+gam_inpatient_parameters_base_environment_df_subset_vif <- map(.x=list_nums, 
+                                                               .f=extract_vif,
+                                                               df=gam_inpatient_parameters_base_environment_list) %>% 
+  bind_rows()
+
+
+
+```
+
+
+
+
+
+
+### All Coefficients
+```{r}
+
+FDR_df_inpatient <- gam_inpatient_parameters_base_environment_df_subset %>% 
+  filter(!Parameter %in% c('age_test','race_normalizedblack','race_normalizedhispanic',
+                           'race_normalizedasian','race_normalizedother','race_normalizedmissing',
+                           'language_normalizedother','language_normalizedspanish','language_normalizedunknown',
+                           'inscat10','inscat11','inscat12','GenderM','GenderU','per_capita_testing',
+                           '(Intercept)'))
+
+
+
+
+FDR_df_inpatient_fdr <- FDR_df_inpatient %>%   
+  mutate(fdr=p.adjust(p, method="fdr")) %>%
+  mutate(significance = if_else(fdr < 0.05,'FDR significant', 'FDR not significant')) %>%
+  mutate(Parameter=environmental_variable)
+
+
+DT::datatable(round_df(FDR_df_inpatient_fdr, digits = 4))
+
+
+
+
+
+
+```
+
+
+
+### Coefficients by FDR < 0.05
+
+```{r}
+DT::datatable(round_df(FDR_df_inpatient_fdr %>% filter(fdr < 0.05),digits=4))
+
+
+
+```
+
+
+## Multivariate GAM Model
+```{r}
+
+inpatient_matern_fdr_filtered <-  mgcv::gam(
+  formula = inpatient_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    hispanic_pct  +
+    foreign_born_pct +
+    pop_dens_log +
+    median_household_income +
+    poverty_under_200_pct +
+    nohs_pct +
+    college_pct +
+    essential_worker_pct +
+    more_than_two_occupant_per_room_pct_dichotimized +
+    units_in_structure_2_plus_pct +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = inpatient_regression_df 
+)
+
+
+parameters_inpatient_matern_fdr_filtered<- parameters(inpatient_matern_fdr_filtered,exponentiate=TRUE)
+
+
+
+
+```
+
+### All Coefficients
+
+```{r}
+
+DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered, digits = 4))
+```
+
+
+### Coefficients by FDR < 0.05
+```{r}
+DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+```
+
+
+# Death Analysis
+
+
+
+## Count Race, Language, Outcome
+```{r}
+
+
+death_inpatient_df <- death_inpatient_df %>% mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
+                                                                                       age_test >= 50 & age_test < 65  ~ '50-64 years',
+                                                                                       age_test >= 65 & age_test < 80 ~ '65-79 years',
+                                                                                       age_test >= 80 ~ '>= 80 years'))
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized) %>% tally())
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized, death_flag) %>% tally())
+
+DT::datatable(death_inpatient_df %>% group_by(language_normalized, death_flag) %>% tally())
+
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,death_flag) %>% tally())
+
+
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,age_category) %>% tally())
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,age_category,death_flag) %>% tally())
+
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized,age_category) %>% tally())
+
+
+DT::datatable(death_inpatient_df %>% group_by(race_normalized,age_category,death_flag) %>% tally())
+
+
+
+DT::datatable(death_inpatient_df %>% group_by(language_normalized,age_category) %>% tally())
+
+
+DT::datatable(death_inpatient_df %>% group_by(language_normalized,age_category,death_flag) %>% tally())
+
+
+```
+
+
+## Distribution of Race and Age
+```{r}
+
+
+ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_wrap( ~ race_normalized)
+
+
+ggplot(death_inpatient_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
+       aes(x=age_test)) + geom_histogram() + facet_wrap( ~ race_normalized)
+
+
+
+
+```
+
+
+
+
+
+
+
+## Distribution of Language and Age
+```{r}
+
+
+ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_wrap( ~ language_normalized)
+
+
+
+
+
+
+
+
+```
+
+
+
+
+## Distribution of Race and Age Straitfied by Death Status
+```{r}
+
+
+ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ race_normalized)
+
+
+ggplot(death_inpatient_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
+       aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ race_normalized)
+
+
+
+
+```
+
+
+
+
+
+
+
+## Distribution of Language and Age Stratified by Death Status
+```{r}
+
+
+ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ language_normalized)
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+## Base Model 
+```{r, warning=FALSE}
+death_matern_base <-  mgcv::gam(
+  formula = death_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp',  k=100, m=c(3,0.00500)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_base <- parameters(death_matern_base,exponentiate=TRUE)
+
+death_matern_base_no_race <-  mgcv::gam(
+  formula = death_flag ~ 
+    age_test + 
+    Gender +
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_base_no_race <- parameters(death_matern_base_no_race,exponentiate=TRUE)
+
+
+
+
+
+
+
+
+death_matern_base_no_language <-  mgcv::gam(
+  formula = death_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_base_no_language <- parameters(death_matern_base_no_language,exponentiate=TRUE)
+
+
+
+
+
+death_matern_base_no_age_race <-  mgcv::gam(
+  formula = death_flag ~ 
+    Gender +
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_base_no_age_race <- parameters(death_matern_base_no_age_race,exponentiate=TRUE)
+
+
+
+
+
+
+death_matern_base_no_age_language <-  mgcv::gam(
+  formula = death_flag ~ 
+    Gender +
+    race_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_base_no_age_language <- parameters(death_matern_base_no_age_language,exponentiate=TRUE)
+
+
+death_glm_base <- glm(formula = death_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_base <- parameters(death_glm_base,exponentiate=TRUE)
+
+
+
+death_glm_base_race <- glm(formula = death_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    per_capita_testing,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_base_race <- parameters(death_glm_base_race,exponentiate=TRUE)
+
+
+
+
+death_glm_base_language <- glm(formula = death_flag ~ 
+    age_test + 
+    Gender +
+    language_normalized + 
+    per_capita_testing,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_base_language <- parameters(death_glm_base_language,exponentiate=TRUE)
+
+
+
+
+
+
+
+
+death_glm_gender_race_only <- glm(formula = death_flag ~ 
+    Gender +
+    race_normalized,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_gender_race_only <- parameters(death_glm_gender_race_only,exponentiate=TRUE)
+
+
+
+
+death_glm_gender_language_only <- glm(formula = death_flag ~ 
+    Gender +
+    language_normalized,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_gender_language_only <- parameters(death_glm_gender_language_only,exponentiate=TRUE)
+
+
+
+
+death_glm_gender_age_only <- glm(formula = death_flag ~ 
+    Gender +
+    age_test,
+      family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_glm_gender_age_only <- parameters(death_glm_gender_age_only,exponentiate=TRUE)
+
+
+
+
+
+```
+
+
+###Variance Influence Factor
+```{r}
+
+DT::datatable(check_collinearity(death_matern_base))
+
+
+DT::datatable(check_collinearity(death_glm_base))
+
+```
+
+### All Coefficients
+```{r}
+DT::datatable(round_df(parameters_death_matern_base, digits = 4))
+
+DT::datatable(round_df(parameters_death_matern_base_no_race, digits = 4))
+DT::datatable(round_df(parameters_death_matern_base_no_language, digits = 4))
+DT::datatable(round_df(parameters_death_matern_base_no_age_race, digits = 4))
+DT::datatable(round_df(parameters_death_matern_base_no_age_language, digits = 4))
+DT::datatable(round_df(parameters_death_matern_base, digits = 4))
+
+
+
+
+DT::datatable(round_df(parameters_death_glm_base, digits = 4))
+
+
+DT::datatable(round_df(parameters_death_glm_base_race, digits = 4))
+
+
+
+
+DT::datatable(round_df(parameters_death_glm_base_language, digits = 4))
+
+
+DT::datatable(round_df(parameters_death_glm_gender_race_only, digits = 4))
+DT::datatable(round_df(parameters_death_glm_gender_language_only, digits = 4))
+DT::datatable(round_df(parameters_death_glm_gender_age_only, digits = 4))
+
+
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+DT::datatable(round_df(parameters_death_matern_base %>% filter(p < 0.05), digits = 4))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Base Plus Individal Environmental Variables
+
+```{r}
+
+inpatient_regression_df %>% group_by(inpatient_flag,VITAL_STATUS_CD) %>% tally()
+
+
+
+
+gam_death_matern_base_environment <- as.formula(death_flag ~ 
+    age_test + 
+    Gender +
+    race_normalized + 
+    language_normalized +
+    inscat1 +
+    per_capita_testing +
+    environmental_value +
+    s(latitude, longitude, bs='gp', k=100, m=c(3,0.00500))
+    )
+
+
+
+
+
+gam_death_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+                                                 .f=safely(gam_estimate_base_environmental_variable),
+                                                 df=death_inpatient_df,
+                                                 formula_matern=gam_death_matern_base_environment)
+  
+  
+
+
+
+gam_death_parameters_base_environment_df_subset <- map(.x=list_nums, 
+                                                     .f=extract_parameters,
+                                                     df=gam_death_parameters_base_environment_list) %>% 
+  bind_rows() %>% filter(Parameter == 'environmental_value')
+
+
+gam_death_parameters_base_environment_df_subset_vif <- map(.x=list_nums, 
+                                                               .f=extract_vif,
+                                                               df=gam_death_parameters_base_environment_list) %>% 
+  bind_rows()
+
+
+
+
+```
+
+
+
+
+```{r}
+
+FDR_df_death<- gam_death_parameters_base_environment_df_subset %>% 
+  filter(!Parameter %in% c('age_test','race_normalizedblack','race_normalizedhispanic',
+                           'race_normalizedasian','race_normalizedother','race_normalizedmissing',
+                           'language_normalizedother','language_normalizedspanish','language_normalizedunknown',
+                           'inscat10','inscat11','inscat12','GenderM','GenderU','per_capita_testing',
+                           '(Intercept)'))
+
+
+
+
+FDR_df_death_fdr <- FDR_df_death %>%   
+  mutate(fdr=p.adjust(p, method="fdr")) %>%
+  mutate(significance = if_else(fdr < 0.05,'FDR significant', 'FDR not significant')) %>%
+  mutate(Parameter=environmental_variable)
+
+
+
+
+
+
+```
+
+### All Coefficients
+```{r}
+DT::datatable(round_df(FDR_df_death_fdr, digits = 4))
+
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+
+DT::datatable(round_df(FDR_df_death_fdr %>% filter(fdr < 0.05), digits = 4))
+
+
+
+```
+
+
+## Multivariate Analysis
+```{r}
+
+death_matern_fdr_filtered <-  mgcv::gam(
+  formula = death_flag ~ 
+    Gender +
+    age_test + 
+    race_normalized + 
+    language_normalized + 
+    inscat1 +
+    per_capita_testing +
+    s(latitude, longitude, bs='gp', k=100, m=c(3,0.00500)),
+  family = binomial(),
+  data = death_inpatient_df 
+)
+
+
+parameters_death_matern_fdr_filtered<- parameters(death_matern_fdr_filtered,exponentiate=TRUE)
+
+
+
+
+```
+
+
+### All Coefficients
+
+```{r}
+
+
+DT::datatable(round_df(parameters_death_matern_fdr_filtered, digits = 4))
+```
+
+### Coefficients by FDR < 0.05
+```{r}
+
+DT::datatable(round_df(parameters_death_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+
+```
+
