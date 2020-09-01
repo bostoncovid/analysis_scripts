@@ -1,5 +1,5 @@
 ---
-title: "11_manuscript_markdown"
+title: "Code used for paper titled *Individual and Census Tract-Level Correlates of Local SARS-CoV-2 Prevalence and Outcomes in Eastern Massachusetts*"
 output: html_document
 ---
 
@@ -94,11 +94,11 @@ plan(multisession, workers = number_of_cores)
 
 
 
-patient_dim <- read_rds('data/patient_dim_v2.rds') %>% 
+patient_dim <- read_rds('/PHShome/cl331/covid_analysis/data/v2/patient_dim_v2.rds') %>% 
   mutate(PATIENT_NUM=as.character(PATIENT_NUM))  
 
 race_dim <- patient_dim %>%
-  dplyr::select(PATIENT_NUM,race_normalized, language_normalized, inscat1)
+  dplyr::select(PATIENT_NUM,race_normalized, language_normalized, inscat1, race_normalized_only_race,reason_for_race_assignment) 
 
 
 credentials <- list(dbname = '',
@@ -127,20 +127,20 @@ query <-
 
 
 
-lab_regression_df_initial <- read_rds('data/covid_lab_pcr_aggregate.rds')  %>% 
+lab_regression_df_initial <- read_rds('/PHShome/cl331/covid_analysis/data/v2/covid_lab_pcr_aggregate.rds')  %>% 
   mutate(PATIENT_NUM=as.character(PATIENT_NUM))
 
 patient_num_lab_df_covid_positive <- lab_regression_df_initial %>% 
   filter(any_pcr_pos == '1') %>% select(PATIENT_NUM) %>% unique()
 
 
-inpatient_regression_df_initial <- read_rds('data/covid_inpatient.rds') %>% 
+inpatient_regression_df_initial <- read_rds('/PHShome/cl331/covid_analysis/data/v2/covid_inpatient.rds') %>% 
   mutate(PATIENT_NUM=as.character(PATIENT_NUM)) %>% 
   inner_join(patient_num_lab_df_covid_positive, by = 'PATIENT_NUM')
 
 
 
-EMPI_address_geocoded <- read_rds('data/basic_info_address_subset.rds') %>% 
+EMPI_address_geocoded <- read_rds('/PHShome/cl331/covid_analysis/data/v2/basic_info_address_subset.rds') %>% 
   mutate(PATIENT_NUM=as.character(PATIENT_NUM)) %>% 
   mutate(pop_dens = total_population/area_sq_km) %>%
   rename(age_test=AGE_IN_YEARS_NUM) %>%
@@ -151,7 +151,8 @@ EMPI_address_geocoded <- read_rds('data/basic_info_address_subset.rds') %>%
   mutate(more_than_two_occupant_per_room_pct_dichotimized = if_else(more_than_two_occupant_per_room_pct == 0.0,0,1)) %>%
   mutate(race_normalized = if_else(is.na(race_normalized),'missing',race_normalized)) %>%
   mutate(language_normalized = if_else(is.na(language_normalized),'missing',language_normalized)) %>%
-  mutate(inscat1 = if_else(is.na(inscat1),0,inscat1)) 
+  mutate(inscat1 = if_else(is.na(inscat1),0,inscat1)) %>%
+  mutate(race_normalized_only_race = if_else(is.na(race_normalized_only_race),'missing',race_normalized_only_race)) 
 
 
 EMPI_address_geocoded$inscat1 <- factor(EMPI_address_geocoded$inscat1, levels = c("3", "0", "1","2"))
@@ -337,404 +338,6 @@ death_census_tract <- death_inpatient_df %>% filter(death_flag == '1') %>%
 list_nums <- 1:length(environmental_variables)
 
 
-```
-
-
-
-## Counts
-
-### Summary before filtering
-
-#### All Statistics
-```{r}
-
-num_people_pre_filtered <- lab_regression_df_pre_filter %>% summarize(n=n())
-
-num_people_pre_filtered <- num_people_pre_filtered$n
-
-DT::datatable(num_people_pre_filtered %>% data.frame(.))
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-DT::datatable(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,race_normalized) %>% tally() %>% pivot_wider(names_from = any_pcr_pos, values_from=n))
-
-
-DT::datatable(lab_regression_df_pre_filter %>% group_by(race_normalized) %>% summarize(positivity_rate = mean(as.numeric(any_pcr_pos))))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>%  group_by(any_pcr_pos) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter  %>% tally(), digits = 4))
-
-
-
-
-
-
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,Gender) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df_pre_filter %>% group_by(any_pcr_pos,inscat1) %>% summarize(n=n(),pct = (n()/num_people_pre_filtered)*100), digits = 4))
-
-```
-
-
-
-### Summary after filtering
-
-#### Labs
-```{r}
-
-num_people_post_filtered <- lab_regression_df %>% summarize(n=n())
-
-num_people_post_filtered <- num_people_post_filtered$n
-
-DT::datatable(num_people_post_filtered %>% data.frame(.))
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(lab_regression_df %>% group_by(any_pcr_pos,race_normalized) %>% tally() %>% pivot_wider(names_from = any_pcr_pos, values_from=n))
-
-
-DT::datatable(lab_regression_df %>% group_by(race_normalized) %>% summarize(positivity_rate = mean(as.numeric(any_pcr_pos))))
-
-
-DT::datatable(round_df(lab_regression_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df %>%  group_by(any_pcr_pos) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df  %>% tally(), digits = 4))
-
-
-
-
-
-
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-```
-
-##### Violin Plot - pct_uninsured
-```{r}
-
-
-ggplot(lab_regression_df, aes(x=as.factor(any_pcr_pos),y=pct_uninsured)) + geom_violin()
-
-
-DT::datatable(lab_regression_df %>% group_by(any_pcr_pos) %>% 
-  summarise(min=min(pct_uninsured),
-            max=max(pct_uninsured), 
-            mean=mean(pct_uninsured), 
-            median=quantile(pct_uninsured, probs=0.5, na.rm=TRUE),
-            pct_25=quantile(pct_uninsured, probs=0.25, na.rm=TRUE),
-            pct_75=quantile(pct_uninsured, probs=0.75, na.rm=TRUE),
-            pct_95=quantile(pct_uninsured, probs=0.95, na.rm=TRUE),
-            pct_99=quantile(pct_uninsured, probs=0.99, na.rm=TRUE),
-            IQR = IQR(pct_uninsured)
-            ) %>% 
-  round_df(digits = 4)
-)
-
-
-
-```
-
-
-
-
-##### Violin Plot - more_than_two_occupant_per_room_pct
-```{r}
-
-
-ggplot(lab_regression_df, aes(x=as.factor(any_pcr_pos),y=more_than_two_occupant_per_room_pct)) + geom_violin()
-
-
-DT::datatable(lab_regression_df %>% group_by(any_pcr_pos) %>% 
-  summarise(min=min(more_than_two_occupant_per_room_pct),
-            max=max(more_than_two_occupant_per_room_pct), 
-            mean=mean(more_than_two_occupant_per_room_pct), 
-            median=quantile(more_than_two_occupant_per_room_pct, probs=0.5, na.rm=TRUE),
-            pct_25=quantile(more_than_two_occupant_per_room_pct, probs=0.25, na.rm=TRUE),
-            pct_75=quantile(more_than_two_occupant_per_room_pct, probs=0.75, na.rm=TRUE),
-            pct_95=quantile(more_than_two_occupant_per_room_pct, probs=0.95, na.rm=TRUE),
-            pct_99=quantile(more_than_two_occupant_per_room_pct, probs=0.99, na.rm=TRUE),
-            IQR = IQR(more_than_two_occupant_per_room_pct)
-            ) %>% 
-  round_df(digits = 4)
-)
-
-
-
-```
-
-
-#### Inpatient
-```{r}
-
-num_people_post_filtered <- inpatient_regression_df %>% summarize(n=n())
-
-num_people_post_filtered <- num_people_post_filtered$n
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(inpatient_regression_df %>% group_by(inpatient_flag,race_normalized) %>% tally() %>% pivot_wider(names_from = inpatient_flag, values_from=n))
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized) %>% summarize(inpatient_rate = mean(as.numeric(inpatient_flag))))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>%  group_by(inpatient_flag) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-DT::datatable(round_df(inpatient_regression_df  %>% tally(), digits = 4))
-
-
-
-
-
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-```
-
-
-
-
-#### Death
-```{r}
-
-num_people_post_filtered <- death_inpatient_df %>% summarize(n=n())
-
-num_people_post_filtered <- num_people_post_filtered$n
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(death_inpatient_df %>% group_by(death_flag,race_normalized) %>% tally() %>% pivot_wider(names_from = death_flag, values_from=n))
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized) %>% summarize(inpatient_rate = mean(as.numeric(death_flag))))
-
-
-DT::datatable(round_df(death_inpatient_df %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-
-
-DT::datatable(round_df(death_inpatient_df %>%  group_by(death_flag) %>% summarise(mean=mean(age_test), sd=sd(age_test)), digits = 4))
-
-
-DT::datatable(round_df(death_inpatient_df  %>% tally(), digits = 4))
-
-
-
-
-
-
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,Gender) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,race_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,language_normalized) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,inscat1) %>% summarize(n=n(),pct = (n()/num_people_post_filtered)*100), digits = 4))
-
-```
-
-
-
-
-#### Race Before and After Incorporating Country of Origin
-```{r}
-
-
-race_prefiltering <- lab_regression_df %>% select(PATIENT_NUM, race_normalized) %>% 
-  left_join(patient_dim %>% dplyr::select(-race_normalized), by='PATIENT_NUM') %>%
-  dplyr::select(PATIENT_NUM,race_normalized, LANGUAGE_CD,RACE_CD,CountryOfOriginDSC) %>%
-  mutate(race_normalized_no_country = case_when(RACE_CD == 'WHITE' ~ 'white',
-                                     RACE_CD == 'BLACK OR AFRICAN AMERICAN' ~ 'black',
-                                     RACE_CD == 'OTHER' ~ 'other',
-                                     RACE_CD == '@' ~ 'missing',
-                                     RACE_CD == 'ASIAN' ~ 'asian',
-                                     RACE_CD == 'HISPANIC OR LATINO' ~ 'hispanic',
-                                     RACE_CD == 'OTHER@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'DECLINED' ~ 'missing',
-                                     RACE_CD == 'UNKNOWN' ~ 'missing',
-                                     RACE_CD == 'WHITE@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'AMERICAN INDIAN OR ALASKA NATIVE' ~ 'other',
-                                     RACE_CD == 'HISPANIC OR LATINO@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER' ~ 'asian',
-                                     RACE_CD == 'BLACK OR AFRICAN AMERICAN@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == '@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'DECLINED@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'SPANISH@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'UNKNOWN@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'BLACK' ~ 'black',
-                                     RACE_CD == 'DOMINICAN' ~ 'hispanic',
-                                     RACE_CD == 'NOT GIVEN' ~ 'missing',
-                                     RACE_CD == 'ASIAN@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'W' ~ 'white',
-                                     RACE_CD == 'U' ~ 'missing',
-                                     RACE_CD == 'DOMINICAN@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'H' ~ 'hispanic',
-                                     RACE_CD == 'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER@HISPANIC' ~ 'asian',
-                                     RACE_CD == 'UNAVAILABLE' ~ 'missing',
-                                     RACE_CD == 'AMERICAN INDIAN OR ALASKA NATIVE@HISPANIC' ~ 'other',
-                                     RACE_CD == 'ASIAN/AMER IND@HISPANIC' ~ 'hispanic',
-                                     RACE_CD == 'EUROPEAN' ~ 'white',
-                                     RACE_CD == 'HIS/WHITE' ~ 'hispanic',
-                                     RACE_CD == 'NOT REPORTED' ~ 'missing',
-                                     RACE_CD == 'ORIENTAL' ~ 'asian',
-                                     RACE_CD == 'SPANISH' ~ 'hispanic'))
-
-
-
-DT::datatable(race_prefiltering %>% group_by(race_normalized, race_normalized_no_country) %>% tally())
-
-
-
-
-DT::datatable(race_prefiltering %>% 
-                filter(race_normalized_no_country == 'missing' | race_normalized_no_country == 'other' ) %>% 
-                filter(race_normalized_no_country != race_normalized) %>%
-                group_by(race_normalized, race_normalized_no_country) %>% tally() %>%
-                arrange(race_normalized_no_country)
-                )
-
-
-```
-
-
-
-
-
-
-# Map
-
-## Process Data
-```{r}
 
 con <- dbConnect(PostgreSQL(), dbname = "", user = "",
                  host = "",
@@ -769,7 +372,7 @@ acs_variables <- lab_regression_df %>%
          foreign_born_pct, essential_worker_pct, bluecollar_worker_pct, people_facing_worker_pct, household_3_plus_pct,
          household_4_plus_pct, household_5_plus_pct, household_6_plus_pct,household_7_plus_pct) %>% unique() 
 
-acs_variables <- round_df(acs_variables, digits = 4)
+acs_variables <- round_df(acs_variables, digits = 2)
 
 
 
@@ -786,7 +389,7 @@ patient_count_census_tract <- lab_regression_df %>%
   mutate(total_patients=positive+negative) %>%
   mutate(pct_positive = positive/total_patients) %>%
   ungroup() %>%
-  mutate(pct_positive = round(pct_positive,digits = 4))
+  mutate(pct_positive = round(pct_positive,digits = 2))
 
 
 spanish_census_tracts <- lab_regression_df %>% 
@@ -839,523 +442,25 @@ postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_p
 
 postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>% filter(total_patients >=5)
 
-```
-
-## Distributions
-
-### Positive Rate Per 1000
-```{r}
-
-ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=total_patients)) + geom_histogram() + scale_x_log10()
-
-
-ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=positive_per_1000)) + geom_histogram() + scale_x_log10()
-
-
-
-DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
-  summarise(min=min(positive_per_1000),
-            max=max(positive_per_1000), 
-            mean=mean(positive_per_1000), 
-            median=quantile(positive_per_1000, probs=0.5, na.rm=TRUE),
-            pct_25=quantile(positive_per_1000, probs=0.25, na.rm=TRUE),
-            pct_75=quantile(positive_per_1000, probs=0.75, na.rm=TRUE),
-            pct_95=quantile(positive_per_1000, probs=0.95, na.rm=TRUE),
-            pct_99=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
-            pct_20=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
-            pct_60=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
-            pct_80=quantile(positive_per_1000, probs=0.99, na.rm=TRUE),
-
-            IQR = IQR(positive_per_1000)
-            ) %>% 
-  round_df(digits = 4)
-)
-
-
-```
-
-
-### Inpatient Rate Per 1000
-```{r}
-ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=inpatient_per_1000)) + geom_histogram() + scale_x_log10()
-
-
-
-
-DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
-  summarise(min=min(inpatient_per_1000, na.rm = TRUE),
-            max=max(inpatient_per_1000, na.rm = TRUE), 
-            mean=mean(inpatient_per_1000, na.rm=TRUE), 
-            median=quantile(inpatient_per_1000, probs=0.5, na.rm=TRUE),
-            pct_25=quantile(inpatient_per_1000, probs=0.25, na.rm=TRUE),
-            pct_75=quantile(inpatient_per_1000, probs=0.75, na.rm=TRUE),
-            pct_95=quantile(inpatient_per_1000, probs=0.95, na.rm=TRUE),
-            pct_99=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
-            pct_20=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
-            pct_60=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE),
-            pct_80=quantile(inpatient_per_1000, probs=0.99, na.rm=TRUE)            
-            ) %>% 
-  round_df(digits = 4)
-)
-
 
 ```
 
 
 
 
-### Death Rate Per 1000
-```{r}
-ggplot(postgis_2013_2014_census_tract_sf_patient, aes(x=death_per_1000)) + geom_histogram() + scale_x_log10()
 
 
 
-DT::datatable(postgis_2013_2014_census_tract_sf_patient %>%  st_drop_geometry(.) %>%
-  summarise(min=min(death_per_1000, na.rm = TRUE),
-            max=max(death_per_1000, na.rm = TRUE), 
-            mean=mean(death_per_1000, na.rm=TRUE), 
-            median=quantile(death_per_1000, probs=0.5, na.rm=TRUE),
-            pct_25=quantile(death_per_1000, probs=0.25, na.rm=TRUE),
-            pct_75=quantile(death_per_1000, probs=0.75, na.rm=TRUE),
-            pct_95=quantile(death_per_1000, probs=0.95, na.rm=TRUE),
-            pct_99=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
-            pct_20=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
-            pct_60=quantile(death_per_1000, probs=0.99, na.rm=TRUE),
-            pct_80=quantile(death_per_1000, probs=0.99, na.rm=TRUE)            
-            ) %>% 
-  round_df(digits = 4)
-)
 
+This file contains code used to run the statistical analysis used in the paper titled *Individual and Census Tract-Level Correlates of Local SARS-CoV-2 Prevalence and Outcomes in Eastern Massachusetts*.  We present the summary statistics for the Census level variables used in this analysis as well as code for running the logistic mixed models for the three SARS-CoV-2 outcomes analyzed in the paper.
 
-```
 
+# Statistical distribution for census tract variables used in the analysis
 
-### Counts by Age Group
-```{r}
 
-lab_regression_df <- lab_regression_df %>% 
-  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
-                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
-                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
-                                  age_test >= 80 ~ '>= 80 years')) %>%
-  mutate(age_category = factor(age_category,
-                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
+Minimum, maximum, mean, median, 25th percentile, 75th percentile, 95th percentile, 99th percentile, and inter-quartile range for all Census tract variables used in this analysis.
 
 
-
-inpatient_regression_df <- inpatient_regression_df %>% 
-  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
-                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
-                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
-                                  age_test >= 80 ~ '>= 80 years')) %>%
-    mutate(age_category = factor(age_category,
-                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
-
-
-
-
-
-death_inpatient_df <- death_inpatient_df %>%
-  mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
-                                  age_test >= 50 & age_test < 65  ~ '50-64 years',
-                                  age_test >= 65 & age_test < 80 ~ '65-79 years',
-                                  age_test >= 80 ~ '>= 80 years')) %>%
-    mutate(age_category = factor(age_category,
-                               levels = c('< 50 years','50-64 years','65-79 years','>= 80 years')))
-
-
-```
-
-
-#### Lab
-```{r}
-n_lab <- lab_regression_df %>% tally()
-n_lab <- n_lab$n
-
-
-DT::datatable(round_df(lab_regression_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_lab), digits = 2))
-
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos) %>% 
-                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(lab_regression_df %>% group_by(any_pcr_pos, age_category) %>% 
-                         summarise(n=n(),percent=100*n()/n_lab), digits = 2))
-
-
-
-
-```
-
-
-
-#### Inpatient
-```{r}
-n_inpatient <- inpatient_regression_df %>% tally()
-n_inpatient <- n_inpatient$n
-
-
-DT::datatable(round_df(inpatient_regression_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_inpatient), digits = 2))
-
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag) %>% 
-                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(inpatient_regression_df %>% group_by(inpatient_flag,age_category) %>% 
-                         summarise(n=n(),percent=100*n()/n_inpatient), digits = 2))
-
-
-
-
-```
-
-
-
-
-#### Death
-```{r}
-n_death <- death_inpatient_df %>% tally()
-n_death <- n_death$n
-
-
-DT::datatable(round_df(death_inpatient_df %>% summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(age_category) %>% summarise(n=n(),percent=100*n()/n_death), digits = 2))
-
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag) %>% 
-                         summarise(mean_age = mean(age_test), sd_age = sd(age_test)), digits = 2))
-
-
-DT::datatable(round_df(death_inpatient_df %>% group_by(death_flag,age_category) %>% summarise(n=n(),percent=100*n()/n_death), digits = 2))
-
-
-
-
-```
-
-
-## Leaflet Map
-
-### Lab
-```{r}
-
-
-write_rds(postgis_2013_2014_census_tract_sf_patient, 'data/postgis_2013_2014_census_tract_sf_patient.rds')
-
-postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>%
-  mutate(positive_rate_category = case_when(positive_per_1000 == 0.0 ~ '0',
-                                            positive_per_1000 > 0 &  positive_per_1000 <= 1 ~ '(0-1]',
-                                            positive_per_1000 > 1 &  positive_per_1000 <= 10 ~ '(1-10]',
-                                            positive_per_1000 > 10 &  positive_per_1000 <= 30 ~ '(10-30]',
-                                            positive_per_1000 > 30 &  positive_per_1000 <= 60 ~ '(30-60]',
-                                            positive_per_1000 > 60 &  positive_per_1000 <= 100 ~ '(60-100]'
-                                            )
-         ) %>%
-  mutate(positive_rate_category = factor(positive_rate_category,levels =c('0','(0-1]','(1-10]','(10-30]','(30-60]','(60-100]'))) 
-
-
-pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
-              levels =  c('0','(0-1]','(1-10]','(10-30]','(30-60]','(60-100]'))
-
-
-
-
-p <-  leaflet() %>%
-   setView(lat=42.407211,lng =-71.382439 ,zoom = 9) %>%
-  addTiles() %>%
-  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
-              color = "#444444", weight = 1, smoothFactor = 0.5,
-              opacity = 0, fillOpacity = 0.5,
-              fillColor = ~pal(positive_rate_category),
-              highlightOptions = highlightOptions(color = "white", weight = 2,
-                                                  bringToFront = TRUE),
-              popup = paste("Negative: ", postgis_2013_2014_census_tract_sf_patient$negative, "<br>",
-                            "Positive: ", postgis_2013_2014_census_tract_sf_patient$positive, "<br>",
-                            "Total Patients: ", postgis_2013_2014_census_tract_sf_patient$total_patients, "<br>",
-                            "Positive %: ", postgis_2013_2014_census_tract_sf_patient$pct_positive, "<br>",
-                            "Positive Per 1000: ", postgis_2013_2014_census_tract_sf_patient$positive_per_1000, "<br>",
-                            "White %: ", postgis_2013_2014_census_tract_sf_patient$white_pct, "<br>",
-                            "Black %: ", postgis_2013_2014_census_tract_sf_patient$black_pct, "<br>",
-                            "Asian %: ", postgis_2013_2014_census_tract_sf_patient$asian_pct, "<br>",
-                            "Hispanic %: ", postgis_2013_2014_census_tract_sf_patient$hispanic_pct, "<br>",
-                            "Median Household Income ", postgis_2013_2014_census_tract_sf_patient$median_household_income, "<br>",
-                            "Below Poverty Level %: ", postgis_2013_2014_census_tract_sf_patient$total_below_poverty, "<br>",
-                            "College Degree %: ", postgis_2013_2014_census_tract_sf_patient$college_pct, "<br>",
-                            "No High School %: ", postgis_2013_2014_census_tract_sf_patient$nohs_pct, "<br>",
-                            "Unemployed %: ", postgis_2013_2014_census_tract_sf_patient$unemployed_pct, "<br>",
-postgis_2013_2014_census_tract_sf_patient$more_than_one_point_five_occupant_per_room_pct, "<br>",
-                            "More Than 2 Occupant Per Room %: ", postgis_2013_2014_census_tract_sf_patient$more_than_two_occupant_per_room_pct, "<br>",
-                            "Private Insurance %: ", postgis_2013_2014_census_tract_sf_patient$pct_private_insurance, "<br>",
-                            "Medicare %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicare_insurance, "<br>",
-                            "Medicaid %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicaid_insurance, "<br>",
-                            "Over 65 %: ", postgis_2013_2014_census_tract_sf_patient$over_65_all_pct, "<br>",
-                            "Under 19 %: ", postgis_2013_2014_census_tract_sf_patient$under_19_all_pct, "<br>",
-                            "Below 1.0 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_pct, "<br>",
-                            "Between 1.0 and 1.5 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_150_pct, "<br>",
-                            "Land Area (km^2): ", postgis_2013_2014_census_tract_sf_patient$area_sq_km, "<br>",
-                            "Commute Public Transporation %: ", postgis_2013_2014_census_tract_sf_patient$commute_public_transportation_pct, "<br>",
-                            "Median Year House Built: ", postgis_2013_2014_census_tract_sf_patient$median_year_house_built, "<br>",
-                            "Foreign Born %: ", postgis_2013_2014_census_tract_sf_patient$foreign_born_pct, "<br>",
-                            "Essential Workers %: ", postgis_2013_2014_census_tract_sf_patient$essential_worker_pct, "<br>",
-                            "Household 5+ People %: ", postgis_2013_2014_census_tract_sf_patient$household_5_plus_pct, "<br>")) %>%
-  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
-             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
-
-p
-
-
-```
-
-
-
-### Figure 1
-```{r}
-
-
-
-
-
-p <-  leaflet() %>%
-   setView(lat=42.407211,lng =-71.382439 ,zoom = 9) %>%
-  addTiles() %>%
-  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
-              color = "#444444", weight = 1, smoothFactor = 0.5,
-              opacity = 0, fillOpacity = 0.5,
-              fillColor = ~pal(positive_rate_category),
-              highlightOptions = highlightOptions(color = "white", weight = 2,
-                                                  bringToFront = TRUE),
-              popup = paste("Negative: ", postgis_2013_2014_census_tract_sf_patient$negative, "<br>",
-                            "Positive: ", postgis_2013_2014_census_tract_sf_patient$positive, "<br>",
-                            "Total Patients: ", postgis_2013_2014_census_tract_sf_patient$total_patients, "<br>",
-                            "Positive %: ", postgis_2013_2014_census_tract_sf_patient$pct_positive, "<br>",
-                            "Positive Per 1000: ", postgis_2013_2014_census_tract_sf_patient$positive_per_1000, "<br>",
-                            "White %: ", postgis_2013_2014_census_tract_sf_patient$white_pct, "<br>",
-                            "Black %: ", postgis_2013_2014_census_tract_sf_patient$black_pct, "<br>",
-                            "Asian %: ", postgis_2013_2014_census_tract_sf_patient$asian_pct, "<br>",
-                            "Hispanic %: ", postgis_2013_2014_census_tract_sf_patient$hispanic_pct, "<br>",
-                            "Median Household Income ", postgis_2013_2014_census_tract_sf_patient$median_household_income, "<br>",
-                            "Below Poverty Level %: ", postgis_2013_2014_census_tract_sf_patient$total_below_poverty, "<br>",
-                            "College Degree %: ", postgis_2013_2014_census_tract_sf_patient$college_pct, "<br>",
-                            "No High School %: ", postgis_2013_2014_census_tract_sf_patient$nohs_pct, "<br>",
-                            "Unemployed %: ", postgis_2013_2014_census_tract_sf_patient$unemployed_pct, "<br>",
-                            "More Than 2 Occupant Per Room %: ", postgis_2013_2014_census_tract_sf_patient$more_than_two_occupant_per_room_pct, "<br>",
-                            "Private Insurance %: ", postgis_2013_2014_census_tract_sf_patient$pct_private_insurance, "<br>",
-                            "Medicare %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicare_insurance, "<br>",
-                            "Medicaid %: ", postgis_2013_2014_census_tract_sf_patient$pct_medicaid_insurance, "<br>",
-                            "Over 65 %: ", postgis_2013_2014_census_tract_sf_patient$over_65_all_pct, "<br>",
-                            "Under 19 %: ", postgis_2013_2014_census_tract_sf_patient$under_19_all_pct, "<br>",
-                            "Below 1.0 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_pct, "<br>",
-                            "Between 1.0 and 1.5 Poverty Line %: ", postgis_2013_2014_census_tract_sf_patient$poverty_under_100_150_pct, "<br>",
-                            "Land Area (km^2): ", postgis_2013_2014_census_tract_sf_patient$area_sq_km, "<br>",
-                            "Commute Public Transporation %: ", postgis_2013_2014_census_tract_sf_patient$commute_public_transportation_pct, "<br>",
-                            "Median Year House Built: ", postgis_2013_2014_census_tract_sf_patient$median_year_house_built, "<br>",
-                            "Foreign Born %: ", postgis_2013_2014_census_tract_sf_patient$foreign_born_pct, "<br>",
-                            "Essential Workers %: ", postgis_2013_2014_census_tract_sf_patient$essential_worker_pct, "<br>",
-                            "Household 5+ People %: ", postgis_2013_2014_census_tract_sf_patient$household_5_plus_pct, "<br>")) %>%
-  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
-             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
-
-p
-
-
-
-
-
-
-```
-
-
-
-
-### Figure 2
-```{r}
-
-
-
-
-
-
-map_lab_boston <-  leaflet() %>%
-   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
-  addTiles() %>%
-  addPolygons(data=postgis_2013_2014_census_tract_sf_patient,
-              color = "#444444", weight = 1, smoothFactor = 0.5,
-              opacity = 0, fillOpacity = 0.5,
-              fillColor = ~pal(positive_rate_category),
-              highlightOptions = highlightOptions(color = "white", weight = 2,
-                                                  bringToFront = TRUE)) %>%
-  addLegend( pal=pal, values=postgis_2013_2014_census_tract_sf_patient$positive_rate_category, 
-             opacity=0.9, title = "COVID Positive Patients Per 1000", position = "bottomleft" )
-
-map_lab_boston
-
-
-
-
-
-
-```
-
-
-
-
-
-### Figure 3
-```{r}
-
-pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
-              levels =  c('0','(0-2]','(2-4]','(4-6]','(6-8]','(8-9]'))
-
-
-df_inpatient_census_tract <- postgis_2013_2014_census_tract_sf_patient %>%
-  mutate(inpatient_per_1000 = if_else(is.na(inpatient_per_1000),0,inpatient_per_1000)) %>%
-  mutate(inpatient_rate_category = case_when(inpatient_per_1000 == 0.0 ~ '0',
-                                            inpatient_per_1000 > 0 &  inpatient_per_1000 <= 2 ~ '(0-2]',
-                                            inpatient_per_1000 > 2 &  inpatient_per_1000 <= 4 ~ '(2-4]',
-                                            inpatient_per_1000 > 4 &  inpatient_per_1000 <= 6 ~ '(4-6]',
-                                            inpatient_per_1000 > 6 &  inpatient_per_1000 <= 8 ~ '(6-8]',
-                                            inpatient_per_1000 > 8 &  inpatient_per_1000 <= 9 ~ '(8-9]'
-                                            )) %>%
-  mutate(inpatient_rate_category = factor(inpatient_rate_category, levels =  c('0','(0-2]','(2-4]','(4-6]','(6-8]','(8-9]')))
-
-map_inpatient_boston <-  leaflet() %>%
-   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
-  addTiles() %>%
-  addPolygons(data=df_inpatient_census_tract,
-              color = "#444444", weight = 1, smoothFactor = 0.5,
-              opacity = 0, fillOpacity = 0.5,
-              fillColor = ~pal(inpatient_rate_category),
-              highlightOptions = highlightOptions(color = "white", weight = 2,
-                                                  bringToFront = TRUE)) %>%
-  addLegend( pal=pal, values=df_inpatient_census_tract$inpatient_rate_category, 
-             opacity=0.9, title = "COVID Inpatients Per 1000", position = "bottomleft" )
-
-map_inpatient_boston
-
-
-
-
-
-
-```
-
-
-
-### Figure 4
-```{r}
-
-pal <- colorFactor(palette = c('#433368','#3582B8','#76A653','#DFC63D','#DB8144','#A40E1A'), 
-              levels =  c('0','(0-.5]','(.5-1]','(1-2]','(2-3]','(3-4]'))
-
-
-df_death_census_tract <- postgis_2013_2014_census_tract_sf_patient %>%
-  mutate(death_per_1000 = if_else(is.na(death_per_1000),0,death_per_1000)) %>%
-  mutate(death_rate_category = case_when(death_per_1000 == 0.0 ~ '0',
-                                            death_per_1000 > 0 &  death_per_1000 <= .5 ~ '(0-.5]',
-                                            death_per_1000 > .5 &  death_per_1000 <= 1 ~ '(.5-1]',
-                                            death_per_1000 > 1 &  death_per_1000 <= 2 ~ '(1-2]',
-                                            death_per_1000 > 2 &  death_per_1000 <= 3 ~ '(2-3]',
-                                            death_per_1000 > 3 &  death_per_1000 <= 4 ~ '(3-4]'
-                                            )) %>%
-  mutate(death_rate_category = factor(death_rate_category, levels =  c('0','(0-.5]','(.5-1]','(1-2]','(2-3]','(3-4]')))
-
-map_death_boston <-  leaflet() %>%
-   setView(lat=42.35457,lng =-71.09132 ,zoom = 12) %>%
-  addTiles() %>%
-  addPolygons(data=df_death_census_tract,
-              color = "#444444", weight = 1, smoothFactor = 0.5,
-              opacity = 0, fillOpacity = 0.5,
-              fillColor = ~pal(death_rate_category),
-              highlightOptions = highlightOptions(color = "white", weight = 2,
-                                                  bringToFront = TRUE)) %>%
-  addLegend( pal=pal, values=df_death_census_tract$death_rate_category, 
-             opacity=0.9, title = "COVID Deaths Per 1000", position = "bottomleft" )
-
-map_death_boston
-
-
-
-
-
-
-```
-
-
-
-
-
-###Map - Spanish Speaking Census Tracts
-```{r}
-
-postgis_2013_2014_census_tract_sf_patient <- postgis_2013_2014_census_tract_sf_patient %>%
-  mutate(pct_positive_spanish=positive_spanish/total_patients) %>%
-  mutate(pct_positive_spanish = pct_positive_spanish * 100)
-
-
-
-hist(postgis_2013_2014_census_tract_sf_patient$pct_positive_spanish)
-
-
-bins <- c(0, 10, 20, 30, 40, 50, Inf)
-pal <- colorBin("YlOrRd", domain = postgis_2013_2014_census_tract_sf_patient$pct_positive_spanish, bins = bins)
-
-postgis_2013_2014_census_tract_sf_patient %>%
-  leaflet() %>%
-  addTiles() %>%
-  addPolygons(label = ~shape_id,
-              fillColor = ~pal(pct_positive_spanish),
-              color = "#444444",
-              weight = 1,
-              smoothFactor = 0.5,
-              opacity = 1.0,
-              fillOpacity = 0.5,
-              highlightOptions = highlightOptions(color = "white",
-                                                  weight = 2,
-                                                  bringToFront = TRUE))  %>%
-  addLegend( pal=pal, values=df_death_census_tract$pct_positive_spanish, 
-             opacity=0.9, title = "Percentage of Individuals that are Positive Spanish Speaking of All Patients", position = "bottomleft" )
-
-
-
-
-
-
-
-```
-
-#### Table showing Census Tracts with High Number of Positive Lab Tests
-```{r}
-
-census_tracts_data <- postgis_2013_2014_census_tract_sf_patient %>% 
-  st_drop_geometry() %>% 
-  select(pct_positive_all_tracts,positive,total_patients,pct_positive,
-         negative_spanish,positive_spanish,positive_spanish,positive_hispanic,negative_hispanic) %>%
-  mutate(pct_spanish_positive=positive_spanish/positive) %>%
-  mutate(pct_hispanic_positive=positive_hispanic/positive) %>%
-  mutate(pct_positive_all_tracts = pct_positive_all_tracts * 100.0)
-
-
-DT::datatable(round_df(census_tracts_data, digits = 3))
-
-
-DT::datatable(lab_regression_df %>% group_by(race_normalized,language_normalized) %>% tally())
-
-```
-
-# Range of Environmental Variables
 ```{r}
 
 
@@ -1369,6 +474,7 @@ census_tract_info_df <- st_drop_geometry(census_tract_info) %>% dplyr::select(-s
 
 census_tract_info_df_long <- census_tract_info_df %>% pivot_longer(-geoid)
 
+#ggplot(census_tract_info_df_long, aes(x=value)) + geom_histogram() + facet_wrap(~name,scales = 'free')
 
 
 census_tract_values_summary <- census_tract_info_df_long %>% group_by(name) %>% 
@@ -1382,49 +488,50 @@ census_tract_values_summary <- census_tract_info_df_long %>% group_by(name) %>%
             pct_99=quantile(value, probs=0.99, na.rm=TRUE),
             IQR = IQR(value)
             ) %>% 
-  round_df(digits = 4)
+  round_df(digits = 2)
 
 
 DT::datatable(census_tract_values_summary)
 
 ```
 
-# Number of Census Tracts
-```{r}
-DT::datatable(census_tract_info_df %>% select(geoid) %>% unique() %>% tally())
 
 
-```
 
 # Lab Analysis
 
-## Distribution of Age by Race
+Code for analysis of risk of infection with SARS-CoV-2.  Risk of infection is based on positivity of viral polymerase chain reaction (PCR) testing for SARS-CoV-2 (lab test).
+
+## Distribution of Age by Race and Primary Language
+
+Age distribution of individuals with positive versus negative lab results for SARS-CoV-2.  Individuals also stratified by race and primary language spoken.
+
 ```{r}
 
-ggplot(lab_regression_df %>% filter(race_normalized %in% c('white','black', 'hispanic')), aes(x=age_test)) + 
-  geom_histogram() + facet_wrap(~race_normalized)
+ggplot(lab_regression_df, aes(x=age_test)) + 
+  geom_histogram() + facet_wrap(~any_pcr_pos)
 
 
-ggplot(lab_regression_df %>% 
-         filter(race_normalized %in% c('white','black', 'hispanic')) %>% 
-                  filter(any_pcr_pos == '1'), aes(x=age_test)) + 
-  geom_histogram() + facet_wrap(~race_normalized)
+ggplot(lab_regression_df, aes(x=age_test)) + 
+  geom_histogram() + facet_grid(any_pcr_pos~race_normalized)
+
+
 
 
 
 
 ggplot(lab_regression_df, aes(x=age_test)) + 
-  geom_histogram() + facet_wrap(~language_normalized)
+  geom_histogram() + facet_grid(any_pcr_pos~language_normalized)
 
 
-ggplot(lab_regression_df %>% 
-                  filter(any_pcr_pos == '1'), aes(x=age_test)) + 
-  geom_histogram() + facet_wrap(~language_normalized)
 
 
 ```
 
 ## Base Model 
+
+Code used to run the base model for the SARS-CoV-2 lab test outcome.
+
 ```{r}
 lab_matern_base <-  mgcv::gam(
   formula = any_pcr_pos ~ 
@@ -1443,50 +550,33 @@ lab_matern_base <-  mgcv::gam(
 parameters_lab_matern_base <- parameters(lab_matern_base,exponentiate=TRUE)
 
 
-lab_glm_base <- glm(  formula = any_pcr_pos ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    language_normalized + 
-    inscat1 +
-    per_capita_testing,
-    family = binomial(),
-    data=lab_regression_df
-    )
 
 
-parameters_lab_glm_base <- parameters(lab_glm_base,exponentiate=TRUE)
-
-
+saveRDS(parameters_lab_matern_base,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_lab_matern_base.rds')
 
 
 ```
-
-### Variance Inflation Factor
-```{r}
-DT::datatable(check_collinearity(lab_matern_base))
-
-
-DT::datatable(check_collinearity(lab_glm_base))
-
-
-```
-
 
 ### All Coefficients
+
+Model statistics for all variables used in base model.
+
 ```{r}
-DT::datatable(round_df(parameters_lab_matern_base, digits = 4))
+DT::datatable(round_df(parameters_lab_matern_base, digits = 2))
 
 
 
-DT::datatable(round_df(parameters_lab_glm_base, digits = 4))
 
 
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics for all variables after filtering (FDR adjusted p-value < 0.05) in base model.
+
 ```{r}
-DT::datatable(round_df(parameters_lab_matern_base %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_lab_matern_base %>% filter(p < 0.05), digits = 2))
 
 
 ```
@@ -1502,6 +592,10 @@ DT::datatable(round_df(parameters_lab_matern_base %>% filter(p < 0.05), digits =
 
 
 ## Base Plus Individual Environmental Variables
+
+Code used to run the base-plus model for the SARS-CoV-2 lab test outcome.  This model iterates through all Census tract variables and fits a model with base variables plus the Census tract variable.
+
+
 ```{r}
 gam_estimate_base_environmental_variable <- function(environmental_variable, df, formula_matern ){
   df <- df %>% rename(environmental_value=!!environmental_variable)
@@ -1512,6 +606,12 @@ gam_estimate_base_environmental_variable <- function(environmental_variable, df,
    
    parameters_output$environmental_variable <- environmental_variable
    
+#   parameters_output_stratified <- df %>% group_by(race_normalized) %>% 
+  #   do(model_stratified=gam(formula = formula_matern_stratified, data = df,family = binomial())) %>%
+  #   parameters(model,exponentiate=TRUE) %>%
+  #   mutate(environmental_variable=environmental_variable) %>% ungroup()
+   
+  # parameters_output <- parameters_output %>% bind_rows(parameters_output_stratified)
    collinearity_matern_both <- check_collinearity(model, component='conditional')
 
       collinearity_matern_both$environmental_variable <- environmental_variable
@@ -1542,13 +642,27 @@ gam_lab_matern_base_environment <- as.formula(any_pcr_pos ~
 
 
 
-gam_lab_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
-                                                 .f=safely(gam_estimate_base_environmental_variable),
-                                                 df=lab_regression_df,
-                                                 formula_matern=gam_lab_matern_base_environment)
+
+#gam_lab_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+#                                                 .f=safely(gam_estimate_base_environmental_variable),
+#                                                 df=lab_regression_df,
+#                                                 formula_matern=gam_lab_matern_base_environment)
   
   
 
+
+
+
+
+
+
+
+#saveRDS(gam_lab_parameters_base_environment_list, '/PHShome/cl331/covid_analysis/data/v2/gam_lab_parameters_base_environment_list.rds')
+
+
+
+
+gam_lab_parameters_base_environment_list <- readRDS('/PHShome/cl331/covid_analysis/data/v2/gam_lab_parameters_base_environment_list.rds')
 
 
 
@@ -1591,6 +705,9 @@ coef_base_plus_rows <- gam_lab_parameters_base_environment_df_subset %>%
 
 
 ### All Coefficients
+
+Model statistics of all Census tract level variables after running all base-plus models.
+
 ```{r}
 FDR_df_lab <- coef_base_plus_rows %>% 
   filter(!Parameter %in% c('age_test','race_normalizedblack','race_normalizedhispanic',
@@ -1606,21 +723,26 @@ FDR_df_lab_fdr <- FDR_df_lab %>%
   mutate(fdr=p.adjust(p, method="fdr")) %>%
   mutate(significance = if_else(fdr < 0.05,'FDR significant', 'FDR not significant'))
 
+#DT::datatable(FDR_df_lab_fdr)
 
-knitr::kable(round_df(FDR_df_lab_fdr, digits=4))
-
-
-
+DT::datatable(round_df(FDR_df_lab_fdr, digits=4))
 
 
+
+
+
+saveRDS(FDR_df_lab_fdr,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/FDR_df_lab_fdr.rds')
 
 
 
 ```
 
 ### Coefficients filtered by FDR < 0.05
+
+Model statistics of all Census tract level variables (after filtering for coefficients with  FDR adjusted p-value < 0.05) after running all base-plus models.
 ```{r}
-knitr::kable(round_df(FDR_df_lab_fdr %>% filter(significance == 'FDR significant'), digits = 4))
+knitr::kable(round_df(FDR_df_lab_fdr %>% filter(significance == 'FDR significant'), digits = 2))
 
 
 ```
@@ -1628,6 +750,9 @@ knitr::kable(round_df(FDR_df_lab_fdr %>% filter(significance == 'FDR significant
 
 
 ## Multivariate Analysis
+Code used to run the multivariate analysis for SARS-CoV-2 lab test outcome.  This model selects all FDR significant Census tract variables from the base plus step and all base variables to fit a single multivariate model.
+
+
 ```{r}
 lab_matern_fdr_filtered <-  mgcv::gam(
   formula = any_pcr_pos ~ 
@@ -1661,22 +786,37 @@ parameters_lab_matern_fdr_filtered<- parameters(lab_matern_fdr_filtered,exponent
 
 
 
+saveRDS(parameters_lab_matern_fdr_filtered,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_lab_matern_fdr_filtered.rds')
+
+
 
 ```
 
 ### All Coefficients
+
+Model statistics of all variables used in multivariate model.
+
+
 ```{r}
-DT::datatable(round_df(parameters_lab_matern_fdr_filtered, digits = 4))
+DT::datatable(round_df(parameters_lab_matern_fdr_filtered, digits = 2))
 
 
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics of all variables (after filtering for FDR adjusted p-value < 0.05) used in multivariate model.
+
 ```{r}
-DT::datatable(round_df(parameters_lab_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_lab_matern_fdr_filtered %>% filter(p < 0.05), digits = 2))
 
 
 ```
+
+
+
+
 
 
 
@@ -1685,62 +825,26 @@ DT::datatable(round_df(parameters_lab_matern_fdr_filtered %>% filter(p < 0.05), 
 
 # Inpatient Analysis 
 
-## Count Race, Language, Outcome
-```{r}
-
-
-inpatient_regression_df <- inpatient_regression_df %>% mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
-                                                                                       age_test >= 50 & age_test < 65  ~ '50-64 years',
-                                                                                       age_test >= 65 & age_test < 80 ~ '65-79 years',
-                                                                                       age_test >= 80 ~ '>= 80 years'))
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized, inpatient_flag) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(language_normalized, inpatient_flag) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,inpatient_flag) %>% tally())
-
-
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,age_category) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized, language_normalized,age_category,inpatient_flag) %>% tally())
-
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized,age_category) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(race_normalized,age_category,inpatient_flag) %>% tally())
-
-
-
-DT::datatable(inpatient_regression_df %>% group_by(language_normalized,age_category) %>% tally())
-
-
-DT::datatable(inpatient_regression_df %>% group_by(language_normalized,age_category,inpatient_flag) %>% tally())
-
-
-
-```
+Code for analysis of hospitilization due to SARS-CoV-2 conditioned on receiving a positive SARS-CoV-2 lab test.
 
 ## Distribution of Race and Age
+
+Age distribution of individuals hospitalized due to SARS-CoV-2 versus not hospitalized due to SARS-CoV-2 (among individuals with a positive SARS-CoV-2 lab test).  Individuals also stratified by race and primary language spoken.
+
 ```{r}
 
 
-ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_wrap(~race_normalized)
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + 
+  geom_histogram() + facet_grid(inpatient_flag~race_normalized)
 
 
-ggplot(inpatient_regression_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
-       aes(x=age_test)) + geom_histogram() + facet_wrap(~race_normalized)
+
+
+
+
+ggplot(inpatient_regression_df, aes(x=age_test)) + 
+  geom_histogram() + facet_grid(inpatient_flag~language_normalized)
 
 
 
@@ -1750,112 +854,13 @@ ggplot(inpatient_regression_df %>% filter(race_normalized %in% c('white','black'
 
 
 
-
-
-
-## Distribution of Language and Age
-```{r}
-
-
-ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_wrap(~language_normalized)
-
-
-
-
-
-
-
-```
-
-
-
-
-
-
-
-
-## Distribution of Race and Age Stratified by Inpatient Status
-```{r}
-
-
-ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
-
-
-ggplot(inpatient_regression_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
-
-
-
-
-```
-
-
-
-
-
-
-
-
-## Distribution of Language and Age Stratified by Inpatient Status
-```{r}
-
-
-ggplot(inpatient_regression_df, aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
-
-
-
-
-
-
-
-
-```
-
-
-
-## Distribution of English/Spanish Language and Race Stratified by Inpatient Status
-```{r}
-
-
-ggplot(inpatient_regression_df %>% filter(language_normalized == 'english'), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
-
-
-
-
-
-ggplot(inpatient_regression_df %>% filter(language_normalized == 'spanish'), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ race_normalized)
-
-
-
-```
-
-
-
-
-
-## Distribution of Hispanic and Language Stratified by Inpatient Status
-```{r}
-
-
-ggplot(inpatient_regression_df %>% filter(race_normalized == 'hispanic'), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
-
-
-
-
-
-ggplot(inpatient_regression_df %>% filter(race_normalized == 'white'), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(inpatient_flag ~ language_normalized)
-
-
-
-```
 
 
 
 ## Base Model 
+
+Code used to run the base model for the hospitilization due to SARS-CoV-2.
+
 ```{r, warning=FALSE}
 
 inpatient_matern_base <-  mgcv::gam(
@@ -1877,218 +882,31 @@ parameters_inpatient_matern_base <- parameters(inpatient_matern_base,exponentiat
 
 
 
-inpatient_matern_base_no_race <-  mgcv::gam(
-  formula = inpatient_flag ~ 
-    age_test + 
-    Gender +
-    language_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = inpatient_regression_df 
-)
 
-
-parameters_inpatient_matern_base_no_race <- parameters(inpatient_matern_base_no_race,exponentiate=TRUE)
-
-
-
-
-
-
-
-
-inpatient_matern_base_no_language <-  mgcv::gam(
-  formula = inpatient_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_matern_base_no_language <- parameters(inpatient_matern_base_no_language,exponentiate=TRUE)
-
-
-
-
-
-inpatient_matern_base_no_age_race <-  mgcv::gam(
-  formula = inpatient_flag ~ 
-    Gender +
-    language_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_matern_base_no_age_race <- parameters(inpatient_matern_base_no_age_race,exponentiate=TRUE)
-
-
-
-
-
-
-inpatient_matern_base_no_age_language <-  mgcv::gam(
-  formula = inpatient_flag ~ 
-    Gender +
-    race_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_matern_base_no_age_language <- parameters(inpatient_matern_base_no_age_language,exponentiate=TRUE)
-
-
-inpatient_glm_base <- glm(formula = inpatient_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    language_normalized + 
-    inscat1 +
-    per_capita_testing,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_base <- parameters(inpatient_glm_base,exponentiate=TRUE)
-
-
-
-inpatient_glm_base_race <- glm(formula = inpatient_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    per_capita_testing,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_base_race <- parameters(inpatient_glm_base_race,exponentiate=TRUE)
-
-
-
-
-inpatient_glm_base_language <- glm(formula = inpatient_flag ~ 
-    age_test + 
-    Gender +
-    language_normalized + 
-    per_capita_testing,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_base_language <- parameters(inpatient_glm_base_language,exponentiate=TRUE)
-
-
-
-
-
-
-
-
-inpatient_glm_gender_race_only <- glm(formula = inpatient_flag ~ 
-    Gender +
-    race_normalized,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_gender_race_only <- parameters(inpatient_glm_gender_race_only,exponentiate=TRUE)
-
-
-
-
-inpatient_glm_gender_language_only <- glm(formula = inpatient_flag ~ 
-    Gender +
-    language_normalized,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_gender_language_only <- parameters(inpatient_glm_gender_language_only,exponentiate=TRUE)
-
-
-
-
-inpatient_glm_gender_age_only <- glm(formula = inpatient_flag ~ 
-    Gender +
-    age_test,
-      family = binomial(),
-  data = inpatient_regression_df 
-)
-
-
-parameters_inpatient_glm_gender_age_only <- parameters(inpatient_glm_gender_age_only,exponentiate=TRUE)
-
-
-
-
+saveRDS(parameters_inpatient_matern_base,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_inpatient_matern_base.rds')
 
 
 ```
-
-###Variance Inflation Factor
-```{r}
-
-DT::datatable(check_collinearity(inpatient_matern_base))
-
-
-DT::datatable(check_collinearity(inpatient_glm_base))
-
-```
-
 
 ### All Coefficients
+
+Model statistics for all variables used in base model.
+
 ```{r}
-DT::datatable(round_df(parameters_inpatient_matern_base, digits = 4))
+DT::datatable(round_df(parameters_inpatient_matern_base, digits = 2))
 
 
-DT::datatable(round_df(parameters_inpatient_matern_base_no_race, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_matern_base_no_language, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_matern_base_no_age_race, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_matern_base_no_age_language, digits = 4))
-
-
-DT::datatable(round_df(parameters_inpatient_glm_base, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_glm_base_race, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_glm_base_language, digits = 4))
-
-
-
-DT::datatable(round_df(parameters_inpatient_glm_gender_race_only, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_glm_gender_language_only, digits = 4))
-
-DT::datatable(round_df(parameters_inpatient_glm_gender_age_only, digits = 4))
 
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics for all variables after filtering (FDR adjusted p-value < 0.05) in base model.
+
+
 ```{r}
-DT::datatable(round_df(parameters_inpatient_matern_base %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_inpatient_matern_base %>% filter(p < 0.05), digits = 2))
 
 
 ```
@@ -2106,6 +924,10 @@ DT::datatable(round_df(parameters_inpatient_matern_base %>% filter(p < 0.05), di
 
 
 ## Base Plus Individal Environmental Variables
+
+Code used to run the base-plus model for hospitilization due to SARS-CoV-2 infection.  This model iterates through all Census tract variables and fits a model with base variables plus the Census tract variable.
+
+
 ```{r}
 
 
@@ -2126,12 +948,18 @@ gam_inpatient_matern_base_environment <- as.formula(inpatient_flag ~
 
 
 
-gam_inpatient_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
-                                                 .f=safely(gam_estimate_base_environmental_variable),
-                                                 df=inpatient_regression_df,
-                                                 formula_matern=gam_inpatient_matern_base_environment)
+#gam_inpatient_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+#                                                 .f=safely(gam_estimate_base_environmental_variable),
+#                                                 df=inpatient_regression_df,
+#                                                 formula_matern=gam_inpatient_matern_base_environment)
   
 
+#saveRDS(gam_inpatient_parameters_base_environment_list, '/PHShome/cl331/covid_analysis/data/v2/gam_inpatient_parameters_base_environment_list.rds')
+
+
+
+
+gam_inpatient_parameters_base_environment_list <- readRDS('/PHShome/cl331/covid_analysis/data/v2/gam_inpatient_parameters_base_environment_list.rds')
 
 
 
@@ -2156,6 +984,10 @@ gam_inpatient_parameters_base_environment_df_subset_vif <- map(.x=list_nums,
 
 
 ### All Coefficients
+
+Model statistics of all Census tract level variables after running all base-plus models.
+
+
 ```{r}
 
 FDR_df_inpatient <- gam_inpatient_parameters_base_environment_df_subset %>% 
@@ -2174,11 +1006,14 @@ FDR_df_inpatient_fdr <- FDR_df_inpatient %>%
   mutate(Parameter=environmental_variable)
 
 
-DT::datatable(round_df(FDR_df_inpatient_fdr, digits = 4))
+DT::datatable(round_df(FDR_df_inpatient_fdr, digits = 2))
 
 
 
 
+
+saveRDS(FDR_df_inpatient_fdr,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/FDR_df_inpatient_fdr.rds')
 
 
 ```
@@ -2187,8 +1022,12 @@ DT::datatable(round_df(FDR_df_inpatient_fdr, digits = 4))
 
 ### Coefficients by FDR < 0.05
 
+Model statistics of all Census tract level variables (after filtering for coefficients with  FDR adjusted p-value < 0.05) after running all base-plus models.
+
+
+
 ```{r}
-DT::datatable(round_df(FDR_df_inpatient_fdr %>% filter(fdr < 0.05),digits=4))
+knitr::kable(round_df(FDR_df_inpatient_fdr %>% filter(fdr < 0.05),digits=2))
 
 
 
@@ -2196,6 +1035,10 @@ DT::datatable(round_df(FDR_df_inpatient_fdr %>% filter(fdr < 0.05),digits=4))
 
 
 ## Multivariate GAM Model
+
+Code used to run the multivariate analysis for hospitilization due to SARS-CoV-2 infection.  This model selects all FDR significant Census tract variables from the base plus step and all base variables to fit a single multivariate model.
+
+
 ```{r}
 
 inpatient_matern_fdr_filtered <-  mgcv::gam(
@@ -2227,146 +1070,65 @@ parameters_inpatient_matern_fdr_filtered<- parameters(inpatient_matern_fdr_filte
 
 
 
+saveRDS(parameters_inpatient_matern_fdr_filtered,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_inpatient_matern_fdr_filtered.rds')
+
+
 ```
 
 ### All Coefficients
 
+Model statistics of all variables used in multivariate model.
+
+
 ```{r}
 
-DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered, digits = 4))
+DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered, digits = 2))
 ```
 
 
 ### Coefficients by FDR < 0.05
+
+Model statistics of all variables (after filtering for FDR adjusted p-value < 0.05) used in multivariate model.
+
+
 ```{r}
-DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_inpatient_matern_fdr_filtered %>% filter(p < 0.05), digits = 2))
 ```
+
+
 
 
 # Death Analysis
 
 
-
-## Count Race, Language, Outcome
-```{r}
-
-
-death_inpatient_df <- death_inpatient_df %>% mutate(age_category = case_when(age_test < 50 ~ '< 50 years',
-                                                                                       age_test >= 50 & age_test < 65  ~ '50-64 years',
-                                                                                       age_test >= 65 & age_test < 80 ~ '65-79 years',
-                                                                                       age_test >= 80 ~ '>= 80 years'))
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized) %>% tally())
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized, death_flag) %>% tally())
-
-DT::datatable(death_inpatient_df %>% group_by(language_normalized, death_flag) %>% tally())
-
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,death_flag) %>% tally())
-
-
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,age_category) %>% tally())
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized, language_normalized,age_category,death_flag) %>% tally())
-
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized,age_category) %>% tally())
-
-
-DT::datatable(death_inpatient_df %>% group_by(race_normalized,age_category,death_flag) %>% tally())
-
-
-
-DT::datatable(death_inpatient_df %>% group_by(language_normalized,age_category) %>% tally())
-
-
-DT::datatable(death_inpatient_df %>% group_by(language_normalized,age_category,death_flag) %>% tally())
-
-
-```
+Code for analysis of death due to SARS-CoV-2 conditioned hospitilization due to SARS-CoV-2 lab infection.
 
 
 ## Distribution of Race and Age
+
+Age distribution of individuals that have died due to SARS-CoV-2 versus not died due to SARS-CoV-2 (among individuals hospitalized due to SARS-CoV-2).  Individuals also stratified by race and primary language spoken.
+
+
 ```{r}
 
 
-ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_wrap( ~ race_normalized)
+ggplot(death_inpatient_df, aes(x=age_test)) + 
+  geom_histogram() + facet_grid(death_flag~race_normalized)
 
 
-ggplot(death_inpatient_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
-       aes(x=age_test)) + geom_histogram() + facet_wrap( ~ race_normalized)
 
+
+
+
+ggplot(death_inpatient_df, aes(x=age_test)) + 
+  geom_histogram() + facet_grid(death_flag~language_normalized)
 
 
 
 ```
 
 
-
-
-
-
-
-## Distribution of Language and Age
-```{r}
-
-
-ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_wrap( ~ language_normalized)
-
-
-
-
-
-
-
-
-```
-
-
-
-
-## Distribution of Race and Age Straitfied by Death Status
-```{r}
-
-
-ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ race_normalized)
-
-
-ggplot(death_inpatient_df %>% filter(race_normalized %in% c('white','black','hispanic')), 
-       aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ race_normalized)
-
-
-
-
-```
-
-
-
-
-
-
-
-## Distribution of Language and Age Stratified by Death Status
-```{r}
-
-
-ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_grid(death_flag ~ language_normalized)
-
-
-
-
-
-
-
-
-```
 
 
 
@@ -2375,6 +1137,9 @@ ggplot(death_inpatient_df, aes(x=age_test)) + geom_histogram() + facet_grid(deat
 
 
 ## Base Model 
+
+Code used to run the base model for death due to SARS-CoV-2.
+
 ```{r, warning=FALSE}
 death_matern_base <-  mgcv::gam(
   formula = death_flag ~ 
@@ -2392,218 +1157,30 @@ death_matern_base <-  mgcv::gam(
 
 parameters_death_matern_base <- parameters(death_matern_base,exponentiate=TRUE)
 
-death_matern_base_no_race <-  mgcv::gam(
-  formula = death_flag ~ 
-    age_test + 
-    Gender +
-    language_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = death_inpatient_df 
-)
 
 
-parameters_death_matern_base_no_race <- parameters(death_matern_base_no_race,exponentiate=TRUE)
 
-
-
-
-
-
-
-
-death_matern_base_no_language <-  mgcv::gam(
-  formula = death_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_matern_base_no_language <- parameters(death_matern_base_no_language,exponentiate=TRUE)
-
-
-
-
-
-death_matern_base_no_age_race <-  mgcv::gam(
-  formula = death_flag ~ 
-    Gender +
-    language_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_matern_base_no_age_race <- parameters(death_matern_base_no_age_race,exponentiate=TRUE)
-
-
-
-
-
-
-death_matern_base_no_age_language <-  mgcv::gam(
-  formula = death_flag ~ 
-    Gender +
-    race_normalized + 
-    inscat1 +
-    per_capita_testing +
-    s(latitude, longitude, bs='gp', k=350, m=c(3,.01)),
-  family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_matern_base_no_age_language <- parameters(death_matern_base_no_age_language,exponentiate=TRUE)
-
-
-death_glm_base <- glm(formula = death_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    language_normalized + 
-    inscat1 +
-    per_capita_testing,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_base <- parameters(death_glm_base,exponentiate=TRUE)
-
-
-
-death_glm_base_race <- glm(formula = death_flag ~ 
-    age_test + 
-    Gender +
-    race_normalized + 
-    per_capita_testing,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_base_race <- parameters(death_glm_base_race,exponentiate=TRUE)
-
-
-
-
-death_glm_base_language <- glm(formula = death_flag ~ 
-    age_test + 
-    Gender +
-    language_normalized + 
-    per_capita_testing,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_base_language <- parameters(death_glm_base_language,exponentiate=TRUE)
-
-
-
-
-
-
-
-
-death_glm_gender_race_only <- glm(formula = death_flag ~ 
-    Gender +
-    race_normalized,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_gender_race_only <- parameters(death_glm_gender_race_only,exponentiate=TRUE)
-
-
-
-
-death_glm_gender_language_only <- glm(formula = death_flag ~ 
-    Gender +
-    language_normalized,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_gender_language_only <- parameters(death_glm_gender_language_only,exponentiate=TRUE)
-
-
-
-
-death_glm_gender_age_only <- glm(formula = death_flag ~ 
-    Gender +
-    age_test,
-      family = binomial(),
-  data = death_inpatient_df 
-)
-
-
-parameters_death_glm_gender_age_only <- parameters(death_glm_gender_age_only,exponentiate=TRUE)
-
-
-
-
-
+saveRDS(parameters_death_matern_base,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_death_matern_base.rds')
 ```
 
-
-###Variance Influence Factor
-```{r}
-
-DT::datatable(check_collinearity(death_matern_base))
-
-
-DT::datatable(check_collinearity(death_glm_base))
-
-```
 
 ### All Coefficients
+
+Model statistics for all variables used in base model.
+
 ```{r}
-DT::datatable(round_df(parameters_death_matern_base, digits = 4))
-
-DT::datatable(round_df(parameters_death_matern_base_no_race, digits = 4))
-DT::datatable(round_df(parameters_death_matern_base_no_language, digits = 4))
-DT::datatable(round_df(parameters_death_matern_base_no_age_race, digits = 4))
-DT::datatable(round_df(parameters_death_matern_base_no_age_language, digits = 4))
-DT::datatable(round_df(parameters_death_matern_base, digits = 4))
-
-
-
-
-DT::datatable(round_df(parameters_death_glm_base, digits = 4))
-
-
-DT::datatable(round_df(parameters_death_glm_base_race, digits = 4))
-
-
-
-
-DT::datatable(round_df(parameters_death_glm_base_language, digits = 4))
-
-
-DT::datatable(round_df(parameters_death_glm_gender_race_only, digits = 4))
-DT::datatable(round_df(parameters_death_glm_gender_language_only, digits = 4))
-DT::datatable(round_df(parameters_death_glm_gender_age_only, digits = 4))
+DT::datatable(round_df(parameters_death_matern_base, digits = 2))
 
 
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics for all variables after filtering (FDR adjusted p-value < 0.05) in base model.
+
 ```{r}
-DT::datatable(round_df(parameters_death_matern_base %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_death_matern_base %>% filter(p < 0.05), digits = 2))
 
 
 ```
@@ -2624,6 +1201,9 @@ DT::datatable(round_df(parameters_death_matern_base %>% filter(p < 0.05), digits
 
 
 ## Base Plus Individal Environmental Variables
+
+Code used to run the base-plus model for death due to SARS-CoV-2 infection.  This model iterates through all Census tract variables and fits a model with base variables plus the Census tract variable.
+
 
 ```{r}
 
@@ -2646,14 +1226,19 @@ gam_death_matern_base_environment <- as.formula(death_flag ~
 
 
 
-
-gam_death_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
-                                                 .f=safely(gam_estimate_base_environmental_variable),
-                                                 df=death_inpatient_df,
-                                                 formula_matern=gam_death_matern_base_environment)
+#gam_death_parameters_base_environment_list <- furrr::future_map(.x=environmental_variables, 
+#                                                 .f=safely(gam_estimate_base_environmental_variable),
+#                                                 df=death_inpatient_df,
+#                                                 formula_matern=gam_death_matern_base_environment)
   
   
 
+#saveRDS(gam_death_parameters_base_environment_list, '/PHShome/cl331/covid_analysis/data/v2/gam_death_parameters_base_environment_list.rds')
+
+
+
+
+gam_death_parameters_base_environment_list <- readRDS('/PHShome/cl331/covid_analysis/data/v2/gam_death_parameters_base_environment_list.rds')
 
 
 gam_death_parameters_base_environment_df_subset <- map(.x=list_nums, 
@@ -2695,20 +1280,30 @@ FDR_df_death_fdr <- FDR_df_death %>%
 
 
 
+saveRDS(FDR_df_death_fdr,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/FDR_df_death_fdr.rds')
 
 
 ```
 
 ### All Coefficients
+
+Model statistics of all Census tract level variables after running all base-plus models.
+
+
 ```{r}
-DT::datatable(round_df(FDR_df_death_fdr, digits = 4))
+DT::datatable(round_df(FDR_df_death_fdr, digits = 2))
 
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics of all variables (after filtering for FDR adjusted p-value < 0.05) used in multivariate model.
+
+
 ```{r}
 
-DT::datatable(round_df(FDR_df_death_fdr %>% filter(fdr < 0.05), digits = 4))
+DT::datatable(round_df(FDR_df_death_fdr %>% filter(fdr < 0.05), digits = 2))
 
 
 
@@ -2716,6 +1311,9 @@ DT::datatable(round_df(FDR_df_death_fdr %>% filter(fdr < 0.05), digits = 4))
 
 
 ## Multivariate Analysis
+
+Code used to run the multivariate analysis for death due to SARS-CoV-2 infection.  This model selects all FDR significant Census tract variables from the base plus step and all base variables to fit a single multivariate model.
+
 ```{r}
 
 death_matern_fdr_filtered <-  mgcv::gam(
@@ -2737,21 +1335,33 @@ parameters_death_matern_fdr_filtered<- parameters(death_matern_fdr_filtered,expo
 
 
 
+saveRDS(parameters_death_matern_fdr_filtered,
+        '/PHShome/cl331/covid_analysis/v3/covid_website/data/parameters_death_matern_fdr_filtered.rds')
+
 ```
 
 
 ### All Coefficients
 
+Model statistics of all variables used in multivariate model.
+
+
 ```{r}
 
 
-DT::datatable(round_df(parameters_death_matern_fdr_filtered, digits = 4))
+DT::datatable(round_df(parameters_death_matern_fdr_filtered, digits = 2))
 ```
 
 ### Coefficients by FDR < 0.05
+
+Model statistics of all variables (after filtering for FDR adjusted p-value < 0.05) used in multivariate model.
+
 ```{r}
 
-DT::datatable(round_df(parameters_death_matern_fdr_filtered %>% filter(p < 0.05), digits = 4))
+DT::datatable(round_df(parameters_death_matern_fdr_filtered %>% filter(p < 0.05), digits = 2))
 
 ```
+
+
+
 
